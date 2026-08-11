@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resume Work"
+  short_description: "Reconcile and resume checkpointed work"
+  default_prompt: "Use $resume-work to safely resume the checkpointed work."

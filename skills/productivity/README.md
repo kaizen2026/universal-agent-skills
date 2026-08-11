@@ -1,20 +1,18 @@
 # Productivity
 
-General workflow tools, not code-specific.
+General workflow and continuity skills.
 
 ## User-invoked
 
-Reachable only when you type them (Claude Code: `disable-model-invocation: true`; Codex: `policy.allow_implicit_invocation: false` in `agents/openai.yaml`).
-
-- **[grill-me](./grill-me/SKILL.md)** — Get relentlessly interviewed about a plan or design until every branch of the design tree is resolved.
-- **[handoff](./handoff/SKILL.md)** — Compact the current conversation into a handoff document so another agent can continue the work.
-- **[teach](./teach/SKILL.md)** — Teach the user a new skill or concept over multiple sessions, using the current directory as a stateful teaching workspace.
-- **[to-questionnaire](./to-questionnaire/SKILL.md)** — Turn a decision you can't answer alone into a Markdown questionnaire for the one person who can — filled in async, or together over a meeting.
-- **[wait-what](./wait-what/SKILL.md)** — Fire this the moment a message doesn't land. The agent re-pitches it with the context you're missing, in plain English, using your `CONTEXT.md` vocabulary.
+- **[grill-me](./grill-me/SKILL.md)** — Run a stateless grilling session.
+- **[handoff](./handoff/SKILL.md)** — Export a redacted portable continuation document.
+- **[teach](./teach/SKILL.md)** — Learn a concept across a stateful workspace.
+- **[to-questionnaire](./to-questionnaire/SKILL.md)** — Prepare a decision-focused questionnaire for another person.
+- **[wait-what](./wait-what/SKILL.md)** — Re-pitch the last message with missing context.
 
 ## Model-invoked
 
-Model- or user-reachable (rich trigger phrasing so the model can reach for them).
-
-- **[grilling](./grilling/SKILL.md)** — Interview the user relentlessly about a plan, decision, or idea until every branch of the design tree is resolved.
-- **[writing-for-agents](./writing-for-agents/SKILL.md)** — Writing documents for agents: skills, AGENTS.md/CLAUDE.md, and any doc an agent reaches by a pointer.
+- **[checkpoint-work](./checkpoint-work/SKILL.md)** — Save versioned local work state at meaningful boundaries.
+- **[grilling](./grilling/SKILL.md)** — Apply the reusable interview discipline.
+- **[resume-work](./resume-work/SKILL.md)** — Reconcile a checkpoint against current reality before continuing.
+- **[writing-for-agents](./writing-for-agents/SKILL.md)** — Write concise instructions and artifacts for agents.

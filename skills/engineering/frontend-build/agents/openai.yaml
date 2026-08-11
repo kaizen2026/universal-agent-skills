@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Build"
+  short_description: "Build UI from an approved contract"
+  default_prompt: "Use $frontend-build to implement the approved design contract."

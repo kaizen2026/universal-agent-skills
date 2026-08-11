@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22]
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate skills, runtime, fixtures, and manifests
+        run: npm test
+
+      - name: Smoke-test skills CLI discovery, selective install, and update
+        run: npm run test:installer
+
+      - name: Smoke-test global skills CLI install on an ephemeral runner
+        if: runner.os == 'Linux'
+        env:
+          UAS_RUN_GLOBAL_INSTALLER_SMOKE: "1"
+        run: npm run test:installer
+
+      - name: Verify generated artifacts are synchronized
+        shell: bash
+        run: git diff --exit-code

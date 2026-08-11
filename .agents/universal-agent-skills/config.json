@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "thresholdTokens": 155000,
+  "designRoot": "docs/design",
+  "stateRoot": ".agents/state/continuity",
+  "frontendDesignVariants": 3,
+  "phaseBoundaryCheckpointing": true
+}

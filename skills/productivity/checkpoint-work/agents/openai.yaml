@@ -1,0 +1,4 @@
+interface:
+  display_name: "Checkpoint Work"
+  short_description: "Save durable cross-session work state"
+  default_prompt: "Use $checkpoint-work to save the current phase state."

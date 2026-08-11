@@ -1,55 +1,33 @@
 # Phase boundaries
 
-A **phase** is a chunk of work inside a session — the grilling, the implementation, the QA. The definition is fuzzy on purpose: a phase ends when you think *"ok, we're done with that"*.
+A **phase** is a coherent chunk of work inside a session: discovery, design, implementation, or QA. A boundary is the point where that chunk is complete enough to state what changed and what comes next.
 
-The **phase boundary** is the gap between two phases, and it is the only place this decision belongs. Mid-phase there is no decision to make — continue, or split the work that's left into subagents. Compacting mid-phase makes the agent lose the thread.
+Use checkpoints only at meaningful boundaries, after consequential decisions, before host compaction, or before interruption. They are a safety layer, not something to rewrite after every message.
 
-## The five options
+## The ordered decision
 
-| Option       | What it does                                                    |
-| ------------ | --------------------------------------------------------------- |
-| **Continue** | Stay in the session. No context switch at all.                    |
-| **`/clear`** | Empty the context window and start from nothing.                  |
-| **`/handoff`** | Write a portable markdown file and seed a session anywhere with it. |
-| **Subagent** | Send the task to its own context window and get a report back.     |
-| **`/compact`** | Compress this context and seed a fresh session with the summary.  |
+Work top to bottom. The first yes wins.
 
-## The tree
+1. **Can you continue safely in this session?** Continue when the next phase needs this conversation as a primary source and the host reports enough context capacity. This loses nothing.
+2. **Is the current context irrelevant to the next phase?** If so, use the host's explicit clear or new-session operation. The old session may remain resumable, but that behavior is host-specific.
+3. **Must the work travel?** Create `/checkpoint-work`, then `/handoff` when moving to another harness, directory, cloud job, collaborator, or isolated side task. The handoff is a redacted portable copy; it points to tracked sources instead of duplicating them.
+4. **Can a bounded side task run independently?** Delegate it and keep this session intact. Give the worker stable artifact and commit pointers, not conversational memory alone.
+5. **Does relevant work need a smaller context in this same host?** Create `/checkpoint-work`, then use the host's supported compaction lifecycle. On continuation, run `/resume-work` or rely on a configured adapter's reconciliation context.
+6. **Is the host unable to compact or preserve local state?** Export `/handoff`, start the replacement session explicitly, and reconcile there. A skill cannot universally launch that session.
 
-Work top to bottom at the boundary. The first **yes** wins.
+## Context moves and their cost
 
-**1. Can you continue in this session?** Two things make the answer yes: the next phase needs this phase as a **primary source**, or you have enough [smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone) left (~150k tokens) for the next phase to fit. Grilling → implementation is the standard yes: the implementation wants the reasoning verbatim, not a summary of it. Continue costs nothing and loses nothing, so rule it out before anything else.
+| Move | Carries full conversation? | Durable state | Host dependency |
+| --- | --- | --- | --- |
+| Continue | Yes | None required | Context capacity |
+| Clear or new session | No | Tracked artifacts only unless checkpointed | Command and resume behavior |
+| Checkpoint | No | Local, versioned, gitignored state | None beyond file access |
+| Handoff | No | Redacted portable Markdown | None beyond file access |
+| Delegation | No | Worker report and referenced artifacts | Agent support |
+| Native compaction | No; the host summarizes | Checkpoint plus host summary | Hook and compaction support |
 
-**2. Is the context irrelevant to what comes next?** Is everything in this session — the exploration, the decisions, the dead ends — disposable? If so, **`/clear`**. It is the cheapest move on the board: it takes no time and hands back the whole window. `/clear` also isn't terminal — the old session stays resumable.
+Every move except Continue turns the live conversation into a secondary source. Before a lossy move, record decisions, exact validation, dirty-tree state, pointers, risks, and one concrete next action. Do not persist raw transcripts or secrets.
 
-The cost of getting this wrong is one-way. Clear a *relevant* context and you lose the **why** behind what you built, and no amount of reading the diff back gets it returned.
+## Host capability matters
 
-**3. Do you need to hand off?** `/handoff` is narrow. You need it only when you are:
-
-- swapping to a **new harness** (Claude → Codex),
-- moving to a **new directory** or repo,
-- sending the work to a **colleague**,
-- or forking a side task you found **mid-phase** without derailing what you're doing.
-
-That list is the whole clause. What `/handoff` buys is **portability** — a file that travels. If nothing is travelling, you don't need it.
-
-**4. Can the task be done AFK?** Is it scoped tightly enough to run with you away from the keyboard, no steering? Then send it to a **subagent** and leave this session untouched. Automated review is the standard case: the agent reads the diff and reports, and you aren't needed while it does.
-
-**5. Otherwise, `/compact`.** Relevant context, same harness, same directory, and you need to stay in the loop — this is where the tree lands, and it lands here often. Pass it an instruction (`/compact we're going to QA this area`) so the summary keeps what the next phase needs.
-
-`/compact` is the **default, not the first reach**. It sits at the bottom because the four questions above it are all cheaper or more precise. The failure mode when people start here is a fresh session that is confidently wrong about a decision the summary flattened.
-
-## Primary and secondary sources
-
-Every move except **Continue** turns a **primary source** into a **secondary source** — the session as it happened, replaced by a summary of it. The trade is always the same shape:
-
-| Source                            | Information | Noise | Room to move |
-| --------------------------------- | ----------- | ----- | ------------ |
-| Primary (Continue)                | Full        | Lots  | Little       |
-| Secondary (`/compact`, `/handoff`) | Lossy       | Less  | Lots         |
-
-This is why question 1 comes first. You only pay the lossiness when staying costs more than it saves.
-
-## These are judgement calls
-
-The questions are not objective — each has taste in it, and the same boundary can go two ways on two days. The value is in asking them **in order**, at the boundary rather than in the middle of the work.
+Codex can enforce the configured token threshold and reinject reconciliation after compaction. Claude Code exposes equivalent lifecycle events but controls the actual proactive timing. Cursor and Copilot fire native pre-compaction hooks without accepting this project's absolute threshold. Antigravity CLI can provide status-line telemetry, while Antigravity IDE has no documented compaction signal. Run `/setup-universal-agent-skills` for the current capability report; never treat a portable `SKILL.md` as a universal compaction command.

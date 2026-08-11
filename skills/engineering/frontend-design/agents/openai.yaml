@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Design"
+  short_description: "Explore and approve a visual direction"
+  default_prompt: "Use $frontend-design to explore and approve a visual direction."

@@ -1,16 +1,29 @@
 ---
 name: handoff
-description: Compact the current conversation into a handoff document for another agent to pick up.
-argument-hint: "What will the next session be used for?"
+description: Export a redacted, portable continuation document for another harness, directory, session, collaborator, or mid-phase fork.
+argument-hint: "Who or what will receive the handoff?"
 disable-model-invocation: true
 ---
 
-Write a handoff document summarising the current conversation so a fresh agent can continue the work. Save to the temporary directory of the user's OS - not the current workspace.
+Export a portable handoff from the current work state. Use this when the receiver cannot read the local gitignored checkpoint directly; use `/checkpoint-work` for continuity inside the same workspace and `/resume-work` to reconcile on arrival.
 
-Include a "suggested skills" section in the document, which suggests skills that the agent should invoke.
+First create or refresh `.agents/state/continuity/current.md` only if a meaningful phase boundary or consequential decision has occurred. Reconcile it against current Git status before export.
 
-Do not duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs). Reference them by path or URL instead.
+Write the handoff to the user's requested path, or to a clearly named file in the operating system's temporary directory when no path is supplied. If the continuity runtime exists, prefer its `handoff` command so archival and redaction use the same schema.
 
-Redact any sensitive information, such as API keys, passwords, or personally identifiable information.
+Include:
 
-If the user passed arguments, treat them as a description of what the next session will focus on and tailor the doc accordingly.
+- Objective, success criteria, current phase, and completion status
+- Decisions and rejected alternatives
+- Completed work with exact validation results
+- Dirty-working-tree inventory
+- Pointers to artifacts, issues, design contracts, commits, and branches
+- Risks, blockers, one concrete next action, and suggested skills
+- Source and destination harness/directory when known
+- Schema version and timestamp
+
+Do not copy the body of existing specs, issues, ADRs, design contracts, commits, or diffs; link or point to them. Do not include raw transcripts. Redact secrets, credentials, cookies, personal data, and sensitive command output. If a pointer is local-only or gitignored, label it so the receiver knows it will not travel through Git.
+
+Preserve the source checkpoint's semantic Git and validation provenance. Record export time separately and include the export-time reconciliation; never rewrite an old validation claim so it appears to belong to the current `HEAD`. Replace absolute project and user-home prefixes with portable labels in the exported copy.
+
+If the user passed arguments, use them to tailor the receiver, destination, and next-session focus. Report where the handoff was written and which local-only pointers the receiver must obtain separately.

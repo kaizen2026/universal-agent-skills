@@ -26,17 +26,18 @@ The same-session case is worth naming because the skill's own first line doesn't
 
 `implement` commits to the branch you are on. It does not create one, and it does not ask. Check you are on the branch you want the work on before you start.
 
-If the tickets came from [to-tickets](https://aihero.dev/skills-to-tickets), the tracker they live on was configured by [setup-matt-pocock-skills](https://aihero.dev/skills-setup-matt-pocock-skills). `code-review` reads the same configuration to find the originating spec at close-out.
+If the tickets came from [to-tickets](https://aihero.dev/skills-to-tickets), the tracker they live on was configured by [setup-universal-agent-skills](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/setup-universal-agent-skills/SKILL.md). `code-review` reads the same configuration to find the originating spec at close-out. Frontend work governed by an approved `docs/design/<feature>/DESIGN.md` uses [frontend-build](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/frontend-build/SKILL.md). A prescribed maintenance change that introduces no visual decision does not need a new contract; an unresolved new direction returns to `frontend-design`.
 
 ## What one run does
 
-A run is five beats, in order:
+A run is six beats, in order:
 
-1. Read the ticket or spec and work out the seams.
-2. Drive [tdd](https://aihero.dev/skills-tdd) at the pre-agreed seams, one red-green slice at a time.
-3. Typecheck often, run single test files as it goes.
-4. Run the full test suite once, at the end.
-5. Run [code-review](https://aihero.dev/skills-code-review), then commit to the current branch.
+1. Record the starting `HEAD`, then read the ticket or spec and work out the seams.
+2. For governed frontend work, invoke [frontend-build](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/frontend-build/SKILL.md) against the approved design contract; route only an unresolved visual decision back to `frontend-design`.
+3. Drive [tdd](https://aihero.dev/skills-tdd) at the pre-agreed seams, one red-green slice at a time.
+4. Typecheck often, run single test files as it goes.
+5. Run the full test suite once, at the end.
+6. Run [code-review](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/code-review/SKILL.md) against the recorded fixed point, including staged, unstaged, untracked, and committed changes plus its independent frontend lane when UI changed. Resolve blocking findings, rerun affected checks, then commit to the current branch.
 
 One run covers one ticket. The tickets [to-tickets](https://aihero.dev/skills-to-tickets) produces are tracer-bullet vertical slices sized to fit a single fresh [context window](https://www.aihero.dev/ai-coding-dictionary/context-window), so the intended rhythm is: clear context, implement one ticket, commit, clear again. Each ticket is self-contained, which is what makes the previous ticket's context disposable.
 
@@ -50,7 +51,7 @@ The word "pre-agreed" is doing real work, and it is also the skill's weakest joi
 
 **It finished, but my ticket is still open and the acceptance criteria are still unchecked.**
 
-Correct, and expected. `implement` has no completion step. It ends at the commit and never touches the work item, confirmed on GitHub Issues and on the local markdown tracker, so it is not a tracker integration problem. It also does not act on the findings `code-review` produced, and does not tick the `- [ ]` boxes on the originating issue. Close the ticket and reconcile the criteria yourself. This bites hardest on a dependency chain, because `to-tickets` defines the frontier as tickets whose blockers are all closed. If nothing gets closed, nothing ever becomes visibly unblocked.
+Correct, and expected. `implement` has no tracker-completion step. It resolves blocking `code-review` findings before the commit, but it never closes the work item or ticks the `- [ ]` boxes on the originating issue. Close the ticket and reconcile the criteria yourself. This bites hardest on a dependency chain, because `to-tickets` defines the frontier as tickets whose blockers are all closed. If nothing gets closed, nothing ever becomes visibly unblocked.
 
 **Can I point it at all my tickets at once, or run several in parallel?**
 
@@ -60,11 +61,11 @@ No. One invocation, one ticket. Batch dispatch across a ticket queue and [subage
 
 Not built in. It commits straight to the current branch, which several people find too eager: the code lands before they have had a chance to verify it works. There is no configuration flag and no PR mode. People override it in the invocation ("commit to a branch and open a PR") or by editing their local copy of the skill.
 
-**`code-review` says it cannot see my changes.**
+**Does `code-review` see my changes before the final commit?**
 
-`code-review` reviews `git diff <fixed-point>...HEAD`, which excludes staged and working-tree changes. `implement` runs it before committing, so unless an interim commit already exists there is nothing in that diff to review. Multiple people have reported this and it is unfixed on both sides. Commit first, then review against the point you branched from.
+Yes. `implement` records the starting `HEAD`, and `code-review` combines the committed diff from that point with staged changes, unstaged changes, and direct inspection of untracked files. That keeps review before the final commit without losing work-in-progress files.
 
-Separately, some people deliberately do not want the review inside the run at all, because an agent reviewing the code it just wrote is biased toward its own solution. Running [code-review](https://aihero.dev/skills-code-review) in a fresh session against a fixed point is a legitimate alternative, and is the same reason that skill runs its two axes in separate sub-agents.
+Separately, some people deliberately do not want the review inside the run at all, because an agent reviewing the code it just wrote is biased toward its own solution. Running [code-review](https://aihero.dev/skills-code-review) in a fresh session against a fixed point is a legitimate alternative, and is the same reason that skill runs its applicable Standards, Spec, and Frontend lanes in separate sub-agents.
 
 **One ticket burned 150k tokens. Am I using it wrong?**
 

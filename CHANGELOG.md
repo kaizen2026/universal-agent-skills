@@ -1,3 +1,17 @@
+# Universal Agent Skills
+
+## 1.0.0
+
+- Preserved the full `mattpocock/skills` history and MIT attribution while establishing `kaizen2026/universal-agent-skills` as the derivative distribution.
+- Added contract-driven `frontend-design`, `frontend-build`, and `frontend-review` workflows and routed them through Wayfinder, prototype, implement, and code review.
+- Added schema-v1 `checkpoint-work`, `resume-work`, and portable `handoff` continuity with a zero-dependency Node runtime.
+- Added opt-in capability adapters for Codex, Claude Code, Cursor, GitHub Copilot, and Antigravity, reversible with their local state and fail-safe when that state is missing, with host limitations reported explicitly.
+- Added cross-platform runtime, merge/removal, schema, redaction, skills-discovery, selective-install, and update validation on Windows and Ubuntu.
+
+## Upstream changelog
+
+The entries below are preserved from `mattpocock/skills` as historical provenance.
+
 # mattpocock-skills
 
 ## 1.2.3

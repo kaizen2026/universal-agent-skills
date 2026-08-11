@@ -1,22 +1,21 @@
 {
-  "name": "mattpocock",
+  "name": "universal-agent-skills",
   "owner": {
-    "name": "Matt Pocock",
-    "url": "https://www.aihero.dev"
+    "name": "Universal Agent Skills contributors",
+    "url": "https://github.com/kaizen2026/universal-agent-skills"
   },
-  "description": "Matt Pocock's skills for real engineering, as an installable Claude Code plugin.",
+  "description": "Optional managed Claude Code distribution of Universal Agent Skills.",
   "plugins": [
     {
-      "name": "mattpocock-skills",
+      "name": "universal-agent-skills",
       "source": "./",
-      "description": "Matt Pocock's agent skills for real engineering — grilling, spec/ticket flows, TDD, code review, domain modelling and more.",
+      "description": "Composable engineering, frontend design, and continuity workflows.",
       "category": "engineering",
       "keywords": [
         "engineering",
         "skills",
-        "tdd",
-        "code-review",
-        "grilling"
+        "frontend-design",
+        "continuity"
       ]
     }
   ]

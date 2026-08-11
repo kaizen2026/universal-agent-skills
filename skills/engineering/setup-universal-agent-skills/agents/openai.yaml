@@ -1,0 +1,4 @@
+interface:
+  display_name: "Setup Universal Agent Skills"
+  short_description: "Configure skills and optional host adapters"
+  default_prompt: "Use $setup-universal-agent-skills to configure this repository and its host adapters."

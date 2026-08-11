@@ -1,6 +1,6 @@
-# Matt Pocock Skills
+# Universal Agent Skills
 
-A collection of agent skills (slash commands and behaviors) loaded by Claude Code. Skills are organized into buckets and consumed by per-repo configuration emitted by `/setup-matt-pocock-skills`.
+An MIT-licensed derivative of `mattpocock/skills` that preserves the upstream composable engineering workflows and adds contract-driven frontend design plus portable cross-session continuity. Skills are organized into buckets and per-repo configuration is emitted by `/setup-universal-agent-skills`.
 
 ## Language
 
