@@ -8,6 +8,7 @@ Composable skills for product discovery, implementation, design, and review.
 - **[grill-with-docs](./grill-with-docs/SKILL.md)** — Grill while maintaining project vocabulary and decisions.
 - **[implement](./implement/SKILL.md)** — Build a spec or issue and close with review.
 - **[improve-codebase-architecture](./improve-codebase-architecture/SKILL.md)** — Survey codebase deepening opportunities.
+- **[project-progress](./project-progress/SKILL.md)** — Render an evidence-based visual dashboard from the project's written and executable sources.
 - **[to-spec](./to-spec/SKILL.md)** — Synthesize the current discussion into a tracked spec.
 - **[to-tickets](./to-tickets/SKILL.md)** — Split a plan into tracer-bullet issues with blocking edges.
 - **[triage](./triage/SKILL.md)** — Move incoming issues through triage roles.

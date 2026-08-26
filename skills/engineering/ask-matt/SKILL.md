@@ -50,6 +50,10 @@ Not feature work — upkeep.
 
 - **`/improve-codebase-architecture`** — run whenever you have a spare moment to keep the codebase good for agents to operate in. It surfaces **deepening opportunities**; picking one _generates an idea_ you can take into the main flow at `/grill-with-docs`. It's the survey that finds the candidates; **`/codebase-design`** (below) is the bench you design the chosen one on.
 
+## Project steering
+
+- **`/project-progress`** — turn a repository full of maps, plans, decisions, designs, prototypes, code, and validation records into one standalone interactive HTML dashboard. Use it whenever the written trail is too dense to answer “where are we?” quickly. Its **evidence ladder** keeps defined, designed, prototyped, implemented, validated, and operational progress separate, so a cleared decision map can never masquerade as a nearly built product. It updates only its model and generated view; it does not resolve the work it displays.
+
 ## Vocabulary underneath
 
 Two model-invoked references that run *beneath* the other skills — each the single source of truth for its vocabulary. Reach for them directly when the **words**, not the process, are the problem; or let the skills above pull them in.

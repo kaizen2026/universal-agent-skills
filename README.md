@@ -102,6 +102,7 @@ User-invoked orchestrators:
 - [`grill-with-docs`](./skills/engineering/grill-with-docs/SKILL.md) — interview while sharpening project language and decisions.
 - [`implement`](./skills/engineering/implement/SKILL.md) — build a spec or issue and close with review.
 - [`improve-codebase-architecture`](./skills/engineering/improve-codebase-architecture/SKILL.md) — survey deepening opportunities.
+- [`project-progress`](./skills/engineering/project-progress/SKILL.md) — turn maps, plans, designs, code, and validation into an evidence-based visual dashboard.
 - [`to-spec`](./skills/engineering/to-spec/SKILL.md), [`to-tickets`](./skills/engineering/to-tickets/SKILL.md), and [`triage`](./skills/engineering/triage/SKILL.md) — shape and route tracked work.
 - [`wayfinder`](./skills/engineering/wayfinder/SKILL.md) — map a large, foggy decision space across sessions.
 

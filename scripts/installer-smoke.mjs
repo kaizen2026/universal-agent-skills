@@ -17,6 +17,7 @@ const required = [
   "setup-universal-agent-skills",
   "checkpoint-work",
   "resume-work",
+  "project-progress",
 ];
 
 try {
@@ -34,6 +35,8 @@ try {
     "checkpoint-work",
     "--skill",
     "frontend-design",
+    "--skill",
+    "project-progress",
     "--agent",
     "codex",
     "claude-code",
@@ -47,7 +50,7 @@ try {
   ], scratch);
 
   const installed = findSkillNames(scratch);
-  for (const name of ["checkpoint-work", "frontend-design"]) {
+  for (const name of ["checkpoint-work", "frontend-design", "project-progress"]) {
     if (!installed.has(name)) throw new Error(`project install did not materialize ${name}`);
   }
   if (installed.has("handoff")) throw new Error("selective install unexpectedly installed handoff");
@@ -55,7 +58,7 @@ try {
 
   const list = JSON.parse(run(["--yes", "skills@latest", "list", "--json"], scratch));
   const serialized = JSON.stringify(list);
-  for (const name of ["checkpoint-work", "frontend-design"]) {
+  for (const name of ["checkpoint-work", "frontend-design", "project-progress"]) {
     if (!serialized.includes(name)) throw new Error(`skills list did not report ${name}`);
   }
 
@@ -84,7 +87,7 @@ try {
     }
   }
 
-  console.log(`skills CLI discovered ${required.length} v1 skills and passed selective install/update smoke tests for six target agents.`);
+  console.log(`skills CLI discovered ${required.length} required skills and passed selective install/update smoke tests for six target agents.`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
