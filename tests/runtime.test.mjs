@@ -357,13 +357,15 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   write(join(root, ".cursor", "hooks.json"), JSON.stringify({ version: 1, theme: "kept", hooks: { stop: [{ command: "user-stop" }] } }));
   write(join(root, ".github", "hooks", "universal-agent-skills.json"), JSON.stringify({ version: 1, owner: "kept", hooks: { agentStop: [{ command: "user-stop" }] } }));
   write(antigravitySettings, JSON.stringify({ theme: "kept" }));
+  const claudeSettings = join(root, "claude-user-settings.json");
+  write(claudeSettings, JSON.stringify({ theme: "kept" }));
 
   const args = {
     project: root,
     config,
     hosts: ["codex", "claude", "cursor", "copilot", "antigravity"],
     contextWindow: 128000,
-    settingsPaths: { antigravity: antigravitySettings },
+    settingsPaths: { antigravity: antigravitySettings, claude: claudeSettings },
   };
   const first = installAdapters(args);
   assert.equal(first.every((item) => item.configured), true);
@@ -399,6 +401,11 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   assert.equal(antigravity.statusLine.stack_with_default, true);
   assert.match(antigravity.statusLine.command, /statusline --project/);
 
+  const claudeUser = json(claudeSettings);
+  assert.equal(claudeUser.theme, "kept");
+  assert.match(claudeUser.statusLine.command, /statusline --harness claude --project "\$\{CLAUDE_PROJECT_DIR\}"/);
+  assert.equal(claudeUser.statusLine.command.includes(root), false);
+
   const managedFiles = [
     codexConfigPath,
     join(root, ".codex", "hooks.json"),
@@ -406,6 +413,7 @@ test("adapters merge, repeat without duplicates, and restore related prior value
     join(root, ".cursor", "hooks.json"),
     join(root, ".github", "hooks", "universal-agent-skills.json"),
     antigravitySettings,
+    claudeSettings,
   ];
   const beforeRepeat = managedFiles.map((path) => readFileSync(path, "utf8"));
   installAdapters(args);
@@ -415,6 +423,7 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   removeAdapters({ project: root, hosts: args.hosts });
   assert.match(readFileSync(codexConfigPath, "utf8"), /model_auto_compact_token_limit = 999/);
   assert.equal(json(join(root, ".codex", "hooks.json")).hooks.Stop[0].hooks[0].command, "user-stop");
+  assert.deepEqual(json(claudeSettings), { theme: "kept" });
   const restoredClaude = json(join(root, ".claude", "settings.local.json"));
   assert.deepEqual(restoredClaude.env, {
     OTHER: "kept",
@@ -426,6 +435,42 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   assert.equal(json(join(root, ".github", "hooks", "universal-agent-skills.json")).hooks.agentStop[0].command, "user-stop");
   assert.deepEqual(json(antigravitySettings), { theme: "kept" });
   assert.equal(existsSync(join(root, ".agents", "universal-agent-skills", "adapters", "antigravity.json")), false);
+});
+
+test("Claude preserves an existing custom status line and reports it in the limitation", (t) => {
+  const root = workspace(t);
+  const { config } = ensureConfig(root);
+  const settings = join(root, "claude-user-settings.json");
+  write(settings, JSON.stringify({ statusLine: { type: "command", command: "my-status" }, theme: "kept" }));
+  const [result] = installAdapters({
+    project: root,
+    config,
+    hosts: ["claude"],
+    contextWindow: 1000000,
+    settingsPaths: { claude: settings },
+  });
+  // Window + hooks still install, so the adapter is configured; only the status line is skipped.
+  assert.equal(result.configured, true);
+  assert.equal(result.files.includes(settings), false);
+  assert.match(result.limitation, /existing custom statusLine was preserved/);
+  assert.equal(json(settings).statusLine.command, "my-status");
+  removeAdapters({ project: root, hosts: ["claude"] });
+  assert.deepEqual(json(settings), { statusLine: { type: "command", command: "my-status" }, theme: "kept" });
+});
+
+test("Claude status line labels telemetry per harness and keeps the Antigravity default", async (t) => {
+  const root = workspace(t);
+  ensureConfig(root);
+  const payload = JSON.stringify({
+    session_id: "s1",
+    context_window: { context_window_size: 1000000, used_percentage: 8.7, current_usage: { input_tokens: 87000 } },
+  });
+  const claude = captureIo(payload);
+  await main(["statusline", "--harness", "claude", "--project", root], claude.io);
+  assert.equal(claude.writes.join("").trim(), "Claude 87000/155000");
+  const antigravity = captureIo(payload);
+  await main(["statusline", "--project", root], antigravity.io);
+  assert.equal(antigravity.writes.join("").trim(), "UAS 87000/155000");
 });
 
 test("Antigravity preserves an existing custom status line and reports partial setup", (t) => {

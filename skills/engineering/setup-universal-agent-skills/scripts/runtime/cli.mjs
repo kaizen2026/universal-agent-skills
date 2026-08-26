@@ -67,7 +67,7 @@ function setup(project, args, io) {
     config,
     hosts,
     contextWindow,
-    settingsPaths: { antigravity: args["antigravity-settings"] },
+    settingsPaths: { antigravity: args["antigravity-settings"], claude: args["claude-settings"] },
   });
   const output = {
     ok: true,
@@ -248,7 +248,12 @@ function telemetry(project, args, io) {
   return output;
 }
 
-function statusline(project, _args, io) {
+function statusline(project, args, io) {
+  // --harness labels the telemetry source (antigravity by default, or claude). It is a
+  // plain string passed through to processThresholdCrossing so each harness tracks its
+  // own threshold crossing; the token math is identical for both.
+  const harness = typeof args.harness === "string" ? args.harness : "antigravity";
+  const label = harness === "claude" ? "Claude" : "UAS";
   const input = safeStdinJson(io.readStdin());
   const context = input.context_window || input.contextWindow || {};
   const contextWindow = numberArg(context.context_window_size ?? context.contextWindowSize);
@@ -258,7 +263,7 @@ function statusline(project, _args, io) {
     : currentUsageTokens(context.current_usage ?? context.currentUsage);
 
   if (!contextWindow || !tokens) {
-    io.write("UAS: context telemetry unavailable; use /checkpoint-work at the next phase boundary");
+    io.write(`${label}: context telemetry unavailable; use /checkpoint-work at the next phase boundary`);
     return { ok: false, reached: false };
   }
 
@@ -268,7 +273,7 @@ function statusline(project, _args, io) {
   const crossing = processThresholdCrossing({
     project,
     config,
-    harness: "antigravity",
+    harness,
     sessionId: input.conversation_id || input.session_id || "unknown",
     reached,
   });
@@ -277,7 +282,7 @@ function statusline(project, _args, io) {
     : reached
       ? " | threshold crossed"
       : "";
-  io.write(`UAS ${tokens}/${report.effectiveTokens}${suffix}`);
+  io.write(`${label} ${tokens}/${report.effectiveTokens}${suffix}`);
   return { ok: true, reached, tokens, threshold: report, ...crossing };
 }
 
@@ -377,7 +382,7 @@ function printHelp(io) {
   io.write(`Universal Agent Skills runtime
 
 Commands:
-  setup --hosts <list|none> [--context-window <tokens>] [--project <path>]
+  setup --hosts <list|none> [--context-window <tokens>] [--project <path>] [--claude-settings <path>] [--antigravity-settings <path>]
   remove --hosts <list> [--project <path>]
   status [--project <path>]
   threshold --context-window <tokens>
@@ -386,7 +391,7 @@ Commands:
   resume [--input <path>]
   handoff [--input <path>] [--output <path>] [--destination <text>]
   telemetry --harness <name> --tokens <count> --context-window <tokens>
-  statusline [--project <path>]  # reads Antigravity CLI JSON from stdin
+  statusline [--harness antigravity|claude] [--project <path>]  # reads status-line JSON from stdin
 
 No adapter is installed unless setup receives an explicit --hosts list.`);
   return { ok: true };

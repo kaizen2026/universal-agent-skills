@@ -197,7 +197,7 @@ function installCodex({ project, config, contextWindow, state }) {
   return result("codex", [configPath, hooksPath], report, "Review and trust project hooks with /hooks; untrusted project config is skipped.");
 }
 
-function installClaude({ project, config, contextWindow, state }) {
+function installClaude({ project, config, contextWindow, state, settingsPaths = {} }) {
   const detectedWindow = Number(contextWindow) > 0 ? Number(contextWindow) : null;
   const report = thresholdReport(config, detectedWindow);
   const path = resolveWithin(project, ".claude/settings.local.json");
@@ -225,7 +225,48 @@ function installClaude({ project, config, contextWindow, state }) {
   upsertNested(settings.hooks, "PostCompact", "manual|auto", claudeHandler("PostCompact"));
   upsertNested(settings.hooks, "SessionStart", "startup|resume|clear|compact", claudeHandler("SessionStart"));
   writeJsonAtomic(path, settings);
-  return result("claude", [path], report, "The 155k calculation window is an upper bound, not an exact consumed-token trigger; actual timing remains Claude-controlled.");
+
+  const statusLine = installClaudeStatusLine({ project, state, settingsPaths });
+  const base = "The 155k calculation window is an upper bound, not an exact consumed-token trigger; actual timing remains Claude-controlled.";
+  return result(
+    "claude",
+    statusLine.conflict ? [path] : [path, statusLine.path],
+    report,
+    statusLine.conflict
+      ? `${base} An existing custom statusLine was preserved; compose the displayed command with it manually for smart-zone telemetry.`
+      : `${base} The status line shows live usage against the effective threshold rather than raw percent-of-window.`,
+  );
+}
+
+function claudeSettingsPath(project, settingsPaths = {}) {
+  const override = settingsPaths.claude || process.env.UAS_CLAUDE_SETTINGS;
+  return override ? resolve(project, override) : resolve(homedir(), ".claude/settings.json");
+}
+
+function claudeStatusLineCommand() {
+  // Claude Code substitutes ${CLAUDE_PROJECT_DIR} when it runs the status line, so a
+  // single user-scoped entry follows whichever project the session is in — the same
+  // substitution claudeHandler relies on for hooks.
+  return `node "\${CLAUDE_PROJECT_DIR}/${MANAGED_FRAGMENT}" statusline --harness claude --project "\${CLAUDE_PROJECT_DIR}"`;
+}
+
+function installClaudeStatusLine({ project, state, settingsPaths }) {
+  // statusLine is a user-scoped Claude Code setting (~/.claude/settings.json), like the
+  // Antigravity CLI status line. Tests and CI pass settingsPaths.claude to keep writes
+  // out of the real home directory.
+  const settingsPath = claudeSettingsPath(project, settingsPaths);
+  rememberCreated(state, project, settingsPath);
+  const managed = { type: "command", command: claudeStatusLineCommand() };
+  const settings = readJson(settingsPath, {});
+  const alreadyManaged = state.managedClaudeStatusLine && JSON.stringify(settings.statusLine) === state.managedClaudeStatusLine;
+  const conflict = Boolean(settings.statusLine) && !alreadyManaged;
+  if (!conflict) {
+    state.claudeSettingsPath = settingsPath;
+    settings.statusLine = managed;
+    state.managedClaudeStatusLine = JSON.stringify(managed);
+    writeJsonAtomic(settingsPath, settings);
+  }
+  return { conflict, path: settingsPath };
 }
 
 function installCursor({ project, config, contextWindow, state }) {
@@ -325,7 +366,18 @@ function removeClaude({ project, state }) {
   if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
   writeJsonAtomic(path, settings);
   removeFileIfEmptyJson(path, wasCreated(state, project, path));
+  removeClaudeStatusLine(state, project);
   return { host: "claude", removed: true };
+}
+
+function removeClaudeStatusLine(state, project) {
+  const settingsPath = state.claudeSettingsPath;
+  if (!settingsPath || !existsSync(settingsPath)) return;
+  const settings = readJson(settingsPath, {});
+  if (!state.managedClaudeStatusLine || JSON.stringify(settings.statusLine) !== state.managedClaudeStatusLine) return;
+  delete settings.statusLine;
+  if (Object.keys(settings).length === 0 && wasCreated(state, project, settingsPath)) unlinkSync(settingsPath);
+  else writeJsonAtomic(settingsPath, settings);
 }
 
 function removeCursor({ project, state }) {
