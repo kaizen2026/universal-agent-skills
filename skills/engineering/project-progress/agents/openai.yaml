@@ -1,0 +1,5 @@
+interface:
+  display_name: "Project Progress"
+  short_description: "Render an evidence-based project progress dashboard"
+policy:
+  allow_implicit_invocation: false
