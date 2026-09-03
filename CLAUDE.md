@@ -23,3 +23,5 @@ Every `SKILL.md` is either user-invoked (`disable-model-invocation: true` plus `
 [`ask-matt`](./skills/engineering/ask-matt/SKILL.md) is the retained upstream router that maps every user-reachable skill and how they relate. The same trigger that re-syncs a docs page applies to it: whenever you add, rename, remove, or change how a user-reachable skill fits the flows, re-read `ask-matt`'s `SKILL.md` and update it so the map stays accurate — a new skill it never mentions, or a stale one it still routes to, is a router that lies.
 
 To (re)link every skill into the local harness skill directories (`~/.claude/skills`, `~/.agents/skills`), run `scripts/link-skills.sh`. Each entry is a symlink into this repo, so a `git pull` keeps installed skills current; re-run the script after adding, removing, or renaming a skill.
+
+For issue publication, triage, blocking relationships, or implementation work, read [the pinned GitHub issue-tracker contract](./docs/agents/issue-tracker.md) and [the triage-role mapping](./docs/agents/triage-labels.md) before the first tracker operation.

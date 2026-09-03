@@ -12,10 +12,18 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+export const CHECKPOINT_SCHEMA_VERSION = 1;
+export const CAPSULE_SCHEMA_VERSION = 1;
+export const DEFAULT_POLICY = Object.freeze({
+  checkpointUtilization: 0.68,
+  compactUtilization: 0.78,
+  minimumReserveTokens: 30000,
+  capsuleBudgetTokens: 500,
+});
 export const DEFAULT_CONFIG = Object.freeze({
   schemaVersion: SCHEMA_VERSION,
-  thresholdTokens: 155000,
+  policy: DEFAULT_POLICY,
   designRoot: "docs/design",
   stateRoot: ".agents/state/continuity",
   frontendDesignVariants: 3,
@@ -69,40 +77,45 @@ export function writeJsonAtomic(path, value) {
   writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-export function effectiveThreshold(thresholdTokens = 155000, contextWindow) {
-  const configured = positiveInteger(thresholdTokens, 155000);
-  const detected = Number(contextWindow);
-  if (Number.isFinite(detected) && detected > 0 && detected < 200000) {
-    return Math.min(configured, Math.floor(detected * 0.75));
-  }
-  return configured;
-}
-
 export function thresholdReport(config, contextWindow) {
+  validatePolicy(config.policy);
   const detected = Number(contextWindow);
-  const effective = effectiveThreshold(config.thresholdTokens, detected);
+  const verified = Number.isFinite(detected) && detected > 0;
+  let checkpointTokens = null;
+  let compactTokens = null;
+  let reserveTokens = null;
+  if (verified) {
+    if (!Number.isInteger(detected)) throw new Error("contextWindow must be a positive integer");
+    if (detected <= config.policy.minimumReserveTokens) {
+      throw new Error("contextWindow must exceed policy.minimumReserveTokens");
+    }
+    checkpointTokens = Math.floor(detected * config.policy.checkpointUtilization);
+    compactTokens = Math.min(
+      Math.floor(detected * config.policy.compactUtilization),
+      detected - config.policy.minimumReserveTokens,
+    );
+    if (checkpointTokens >= compactTokens) {
+      throw new Error("effective checkpoint threshold must be lower than the compact threshold");
+    }
+    reserveTokens = detected - compactTokens;
+  }
   return {
-    configuredTokens: positiveInteger(config.thresholdTokens, 155000),
-    detectedContextWindow: Number.isFinite(detected) && detected > 0 ? detected : null,
-    contextWindowVerified: Number.isFinite(detected) && detected > 0,
-    effectiveTokens: effective,
-    clamped: Number.isFinite(detected) && detected > 0 && detected < 200000,
-    effectivePercent:
-      Number.isFinite(detected) && detected > 0
-        ? Math.max(1, Math.min(100, Math.floor((effective / detected) * 100)))
-        : null,
+    policy: { ...config.policy },
+    detectedContextWindow: verified ? detected : null,
+    contextWindowVerified: verified,
+    checkpointTokens,
+    compactTokens,
+    reserveTokens,
+    capsuleBudgetTokens: config.policy.capsuleBudgetTokens,
+    effectiveTokens: compactTokens,
+    effectivePercent: verified ? Math.floor((compactTokens / detected) * 100) : null,
   };
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
 export function loadConfig(project) {
   const path = resolveWithin(project, ".agents/universal-agent-skills/config.json");
   const existing = readJson(path, {});
-  const config = { ...DEFAULT_CONFIG, ...existing };
+  const config = migrateConfig(existing);
   validateConfig(config);
   return { config, path };
 }
@@ -110,7 +123,7 @@ export function loadConfig(project) {
 export function ensureConfig(project) {
   const path = resolveWithin(project, ".agents/universal-agent-skills/config.json");
   const existing = readJson(path, {});
-  const config = { ...DEFAULT_CONFIG, ...existing };
+  const config = migrateConfig(existing);
   validateConfig(config);
   if (!existsSync(path) || JSON.stringify(existing) !== JSON.stringify(config)) {
     writeJsonAtomic(path, config);
@@ -122,9 +135,7 @@ export function validateConfig(config) {
   if (config.schemaVersion !== SCHEMA_VERSION) {
     throw new Error(`Unsupported config schemaVersion: ${config.schemaVersion}`);
   }
-  if (!Number.isInteger(config.thresholdTokens) || config.thresholdTokens <= 0) {
-    throw new Error("thresholdTokens must be a positive integer");
-  }
+  validatePolicy(config.policy);
   if (config.frontendDesignVariants !== 3) {
     throw new Error("frontendDesignVariants must be exactly 3 in schema version 1");
   }
@@ -135,6 +146,44 @@ export function validateConfig(config) {
     const portable = typeof config[key] === "string" ? config[key].trim().replaceAll("\\", "/") : "";
     if (!portable || isAbsolute(config[key]) || portable === "." || portable === ".." || portable.startsWith("../")) {
       throw new Error(`${key} must be a non-empty project-relative path`);
+    }
+  }
+}
+
+function migrateConfig(existing) {
+  const version = existing.schemaVersion ?? SCHEMA_VERSION;
+  if (![1, SCHEMA_VERSION].includes(version)) {
+    throw new Error(`Unsupported config schemaVersion: ${version}`);
+  }
+  return {
+    ...DEFAULT_CONFIG,
+    ...existing,
+    schemaVersion: SCHEMA_VERSION,
+    policy: { ...DEFAULT_POLICY, ...(existing.policy || {}) },
+  };
+}
+
+function validatePolicy(policy) {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+    throw new Error("policy must be an object");
+  }
+  if (typeof policy.checkpointUtilization !== "number") {
+    throw new Error("policy.checkpointUtilization must be a number");
+  }
+  if (typeof policy.compactUtilization !== "number") {
+    throw new Error("policy.compactUtilization must be a number");
+  }
+  const checkpoint = policy.checkpointUtilization;
+  const compact = policy.compactUtilization;
+  if (!Number.isFinite(checkpoint) || checkpoint <= 0 || checkpoint >= 1) {
+    throw new Error("policy.checkpointUtilization must be greater than 0 and less than 1");
+  }
+  if (!Number.isFinite(compact) || compact <= checkpoint || compact >= 1) {
+    throw new Error("policy.compactUtilization must be greater than checkpointUtilization and less than 1");
+  }
+  for (const key of ["minimumReserveTokens", "capsuleBudgetTokens"]) {
+    if (!Number.isInteger(policy[key]) || policy[key] <= 0) {
+      throw new Error(`policy.${key} must be a positive integer`);
     }
   }
 }
@@ -244,7 +293,7 @@ export function buildCheckpoint({ project, config, harness, event, fields = {}, 
       return updated.endsWith("\n") ? updated : `${updated}\n`;
     }
     const previousMetadata = parseFrontmatter(updated);
-    updated = setFrontmatterValue(updated, "schemaVersion", String(SCHEMA_VERSION));
+    updated = setFrontmatterValue(updated, "schemaVersion", String(CHECKPOINT_SCHEMA_VERSION));
     updated = setFrontmatterValue(updated, "timestamp", now);
     updated = setFrontmatterValue(updated, "originatingHarness", safeScalar(harness || "other"));
     updated = setFrontmatterValue(updated, "event", safeScalar(event || "manual"));
@@ -276,7 +325,7 @@ export function buildCheckpoint({ project, config, harness, event, fields = {}, 
 
   const value = (key, fallback) => redactSensitive(fields[key] || fallback);
   return `---
-schemaVersion: ${SCHEMA_VERSION}
+schemaVersion: ${CHECKPOINT_SCHEMA_VERSION}
 timestamp: ${now}
 originatingHarness: ${safeScalar(harness || "other")}
 event: ${safeScalar(event || "manual")}
@@ -355,7 +404,7 @@ function escapeRegExp(value) {
 export function validateCheckpoint(document) {
   const errors = [];
   const metadata = parseFrontmatter(document);
-  if (metadata.schemaVersion !== String(SCHEMA_VERSION)) errors.push(`schemaVersion must be ${SCHEMA_VERSION}`);
+  if (metadata.schemaVersion !== String(CHECKPOINT_SCHEMA_VERSION)) errors.push(`schemaVersion must be ${CHECKPOINT_SCHEMA_VERSION}`);
   for (const key of ["timestamp", "originatingHarness", "event", "status", "gitHead"]) {
     if (!metadata[key]) errors.push(`missing frontmatter field: ${key}`);
   }
@@ -411,6 +460,180 @@ export function parseFrontmatter(document) {
 export function checkpointPaths(project, config) {
   const root = resolveWithin(project, config.stateRoot);
   return { root, current: join(root, "current.md"), history: join(root, "history") };
+}
+
+const CAPSULE_HEADINGS = Object.freeze([
+  ["objective", "Objective"],
+  ["successCriteria", "Success criteria"],
+  ["phase", "Current phase"],
+  ["decisions", "Binding decisions"],
+  ["validation", "Validation state"],
+  ["blockers", "Blockers"],
+  ["next", "Next action"],
+  ["pointers", "Authority pointers"],
+]);
+
+export function workItemPaths(project, config, workItemId) {
+  const id = validateIdentity("workItemId", workItemId);
+  const state = checkpointPaths(project, config);
+  const root = resolveWithin(state.root, join("work-items", id));
+  return { root, capsule: join(root, "semantic.md") };
+}
+
+export function activateWorkItem({ project, config, workItemId, harness, sessionId }) {
+  const id = validateIdentity("workItemId", workItemId);
+  const normalizedHarness = validateHarness(harness);
+  const normalizedSession = validateIdentity("sessionId", sessionId);
+  const paths = workItemPaths(project, config, id);
+  const created = !existsSync(paths.capsule);
+  if (created) {
+    const document = buildCapsule({
+      project,
+      workItemId: id,
+      revision: 0,
+      harness: normalizedHarness,
+      sessionId: normalizedSession,
+      fields: {},
+    });
+    writeTextAtomic(paths.capsule, document);
+  } else {
+    const validation = validateCapsule(readFileSync(paths.capsule, "utf8"), id);
+    if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
+  }
+  const binding = { schemaVersion: 1, workItemId: id, harness: normalizedHarness, sessionId: normalizedSession, boundAt: new Date().toISOString() };
+  writeJsonAtomic(sessionBindingPath(project, config, normalizedHarness, normalizedSession), binding);
+  const metadata = parseFrontmatter(readFileSync(paths.capsule, "utf8"));
+  return { workItemId: id, created, revision: Number(metadata.revision), binding };
+}
+
+export function resolveActiveWorkItem({ project, config, workItemId, harness, sessionId }) {
+  if (workItemId) {
+    const id = validateIdentity("workItemId", workItemId);
+    const paths = workItemPaths(project, config, id);
+    return existsSync(paths.capsule)
+      ? { ok: true, workItemId: id, resolution: "explicit", paths }
+      : { ok: false, resolution: "explicit", reason: `Work item does not exist: ${id}` };
+  }
+  if (sessionId) {
+    const normalizedHarness = validateHarness(harness);
+    const normalizedSession = validateIdentity("sessionId", sessionId);
+    const path = sessionBindingPath(project, config, normalizedHarness, normalizedSession);
+    if (existsSync(path)) {
+      const binding = readJson(path);
+      const id = validateIdentity("workItemId", binding.workItemId);
+      const paths = workItemPaths(project, config, id);
+      return existsSync(paths.capsule)
+        ? { ok: true, workItemId: id, resolution: "session-binding", paths, binding }
+        : { ok: false, resolution: "session-binding", reason: `Bound work item does not exist: ${id}` };
+    }
+  }
+  return { ok: false, resolution: "none", reason: "No active work item. Supply --work-item or a bound --harness and --session." };
+}
+
+export function saveWorkItemCapsule({ project, config, workItemId, harness, sessionId, fields = {} }) {
+  const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
+  if (!resolved.ok) return resolved;
+  const existing = readFileSync(resolved.paths.capsule, "utf8");
+  const validation = validateCapsule(existing, resolved.workItemId);
+  if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
+  const document = buildCapsule({
+    project,
+    workItemId: resolved.workItemId,
+    revision: Number(validation.metadata.revision) + 1,
+    harness: validateHarness(harness || "other"),
+    sessionId: sessionId ? validateIdentity("sessionId", sessionId) : "manual",
+    fields,
+    existing,
+  });
+  const updated = validateCapsule(document, resolved.workItemId);
+  if (!updated.valid) throw new Error(`Work-Item Capsule validation failed: ${updated.errors.join("; ")}`);
+  writeTextAtomic(resolved.paths.capsule, document);
+  return { ...resolved, document, revision: Number(updated.metadata.revision) };
+}
+
+export function reconcileWorkItem({ project, config, workItemId, harness, sessionId }) {
+  const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
+  if (!resolved.ok) return { ...resolved, report: resolved.reason };
+  const document = redactSensitive(readFileSync(resolved.paths.capsule, "utf8"));
+  const validation = validateCapsule(document, resolved.workItemId);
+  if (!validation.valid) {
+    return { ...resolved, ok: false, report: `Work-Item Capsule validation failed: ${validation.errors.join("; ")}` };
+  }
+  const git = gitSnapshot(project);
+  const claims = [
+    {
+      item: "Capsule schema",
+      status: "Confirmed",
+      detail: `Schema v${CAPSULE_SCHEMA_VERSION} is structurally valid.`,
+    },
+    {
+      item: "Git HEAD",
+      status: validation.metadata.gitHead === "unavailable" || git.head === "unavailable"
+        ? "Unverified"
+        : validation.metadata.gitHead === git.head ? "Confirmed" : "Changed",
+      detail: `capsule=${validation.metadata.gitHead || "missing"}; current=${git.head}`,
+    },
+    ...checkLocalPointers(project, extractSection(document, "Authority pointers")),
+  ];
+  const table = claims.map((claim) => `| ${escapeTable(claim.item)} | ${claim.status} | ${escapeTable(claim.detail)} |`).join("\n");
+  const ok = !claims.some((claim) => claim.status === "Changed" || claim.status === "Missing");
+  const report = `# Work-Item Capsule resume\n\nResolution: \`${resolved.resolution}\`\n\nWork Item: \`${resolved.workItemId}\`\n\nCapsule revision: ${validation.metadata.revision}\n\n| Claim | Status | Evidence |\n| --- | --- | --- |\n${table}\n\n## Reconciled capsule\n\n${document}`;
+  return { ...resolved, ok, document, validation, claims, report, revision: Number(validation.metadata.revision) };
+}
+
+function buildCapsule({ project, workItemId, revision, harness, sessionId, fields, existing }) {
+  const git = gitSnapshot(project);
+  const prior = existing || "";
+  const body = CAPSULE_HEADINGS.map(([field, heading]) => {
+    const previous = prior ? extractSection(prior, heading) : "";
+    const fallback = field === "next" ? "Record one concrete next action." : "Not recorded yet.";
+    return `## ${heading}\n\n${redactSensitive(fields[field] || previous || fallback)}`;
+  }).join("\n\n");
+  return `---\nschemaVersion: ${CAPSULE_SCHEMA_VERSION}\nworkItemId: ${workItemId}\nrevision: ${revision}\nupdatedAt: ${new Date().toISOString()}\nupdatedByHarness: ${safeScalar(harness)}\nupdatedBySession: ${safeScalar(sessionId)}\ngitHead: ${safeScalar(git.head)}\n---\n\n# Work-Item Capsule\n\n${body}\n`;
+}
+
+export function validateCapsule(document, expectedWorkItemId) {
+  const errors = [];
+  const metadata = parseFrontmatter(document);
+  if (metadata.schemaVersion !== String(CAPSULE_SCHEMA_VERSION)) errors.push(`schemaVersion must be ${CAPSULE_SCHEMA_VERSION}`);
+  try {
+    validateIdentity("workItemId", metadata.workItemId);
+  } catch (error) {
+    errors.push(error.message);
+  }
+  if (expectedWorkItemId && metadata.workItemId !== expectedWorkItemId) errors.push("workItemId does not match its storage path");
+  if (!Number.isInteger(Number(metadata.revision)) || Number(metadata.revision) < 0) errors.push("revision must be a non-negative integer");
+  if (!isIsoUtc(metadata.updatedAt)) errors.push("updatedAt must be ISO-8601 UTC");
+  for (const key of ["updatedByHarness", "updatedBySession", "gitHead"]) {
+    if (!metadata[key]) errors.push(`missing frontmatter field: ${key}`);
+  }
+  let previousIndex = -1;
+  for (const [, heading] of CAPSULE_HEADINGS) {
+    const matches = [...String(document).matchAll(new RegExp(`^## ${escapeRegExp(heading)}[ \\t]*$`, "gm"))];
+    if (matches.length !== 1) errors.push(matches.length ? `duplicate heading: ${heading}` : `missing heading: ${heading}`);
+    if (matches[0]?.index < previousIndex) errors.push(`heading out of order: ${heading}`);
+    if (matches[0]) previousIndex = matches[0].index;
+  }
+  return { valid: errors.length === 0, errors, metadata };
+}
+
+function sessionBindingPath(project, config, harness, sessionId) {
+  const state = checkpointPaths(project, config);
+  return resolveWithin(state.root, join("bindings", harness, `${sessionId}.json`));
+}
+
+function validateHarness(value) {
+  const harness = String(value || "").toLowerCase();
+  if (!ALLOWED_HARNESSES.has(harness)) throw new Error(`unsupported harness: ${value || "missing"}`);
+  return harness;
+}
+
+function validateIdentity(name, value) {
+  const normalized = String(value || "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(normalized)) {
+    throw new Error(`${name} must start with an alphanumeric character and contain only letters, numbers, dot, underscore, or hyphen`);
+  }
+  return normalized;
 }
 
 export function saveCheckpoint({ project, config, harness, event, fields = {} }) {
@@ -542,7 +765,7 @@ export function exportHandoff({ project, config, inputPath, outputPath, destinat
     .map((claim) => `| ${escapeTable(claim.item)} | ${claim.status} | ${escapeTable(claim.detail)} |`)
     .join("\n");
   const body = `---
-schemaVersion: ${SCHEMA_VERSION}
+schemaVersion: ${CHECKPOINT_SCHEMA_VERSION}
 timestamp: ${timestamp}
 originatingHarness: ${safeScalar(sourceMetadata.originatingHarness || "other")}
 event: handoff

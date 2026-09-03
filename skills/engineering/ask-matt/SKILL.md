@@ -28,7 +28,7 @@ The route most work travels. You have an idea and want it built.
 
 Keep steps 1–3 in **one unbroken context window** — don't compact or clear until after `/to-tickets` — so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.
 
-The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, create a `/checkpoint-work` at the nearest phase boundary before using the host's compaction lifecycle. On arrival, `/resume-work` reconciles the checkpoint with the repository. A portable skill cannot force every host to compact or open a replacement session; `/setup-universal-agent-skills` reports what the current host actually supports.
+The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, activate the issue or explicit objective as a Work Item ID and create `/checkpoint-work` at the nearest phase boundary before using the host's compaction lifecycle. On arrival, `/resume-work` resolves the explicit Work Item ID or session binding and reconciles its capsule with the repository. A portable skill cannot force every host to compact or open a replacement session; `/setup-universal-agent-skills` reports what the current host actually supports.
 
 ## On-ramps
 
@@ -67,7 +67,7 @@ A **phase** is a chunk of work inside a session — the grilling, the implementa
 
 - **Continue** — stay put. Costs nothing, loses nothing.
 - **`/clear`** — empty the window, when nothing here matters to what's next.
-- **`/checkpoint-work`** — save local, gitignored, versioned work state at a meaningful boundary; host hooks can automate this where supported.
+- **`/checkpoint-work`** — save one local, gitignored, revisioned Work-Item Capsule at a meaningful boundary; activate and bind its issue or explicit objective first.
 - **`/handoff`** — export a redacted portable copy for a **new harness**, **new directory**, **colleague**, or side task **mid-phase**.
 - **Subagent** — send a tightly-scoped task to its own window and get a report back.
 - **Host compaction** — after checkpointing, use the host's supported compaction lifecycle. Timing and commands are host-specific.
@@ -85,8 +85,8 @@ Off the main flow entirely.
 - **`/frontend-design`** — explore three runnable visual directions and turn the selected one into a tracked design contract, after product prerequisites are resolved.
 - **`/frontend-build`** — implement an approved design contract through the repository's framework and design system.
 - **`/frontend-review`** — inspect rendered frontend behavior and report visual, responsive, interaction, accessibility, browser, and regression evidence separately from code and spec review.
-- **`/checkpoint-work`** — capture local continuation state at phase boundaries, before compaction, and before interruption.
-- **`/resume-work`** — reconcile a checkpoint or handoff against Git, files, issues, and tests before trusting it.
+- **`/checkpoint-work`** — capture one Work-Item Capsule at phase boundaries, before compaction, and before interruption.
+- **`/resume-work`** — resolve an explicit Work Item ID or session binding, then reconcile its capsule against Git, files, issues, and tests before trusting it.
 - **`/research`** — delegate reading legwork to a **background agent**: it investigates a question against **primary sources**, then leaves a cited Markdown file in the repo. Keep working while it reads. The file it produces is something to take *into* the main flow at `/grill-with-docs` — research feeds the thinking, it doesn't replace it.
 - **`/to-questionnaire`** — when the thing blocking you isn't in your head or the codebase but in **someone else's**, this writes them a questionnaire to fill in. It's the inverse of `/grill-me`: instead of interviewing you about the subject, it interviews you about the **send** — who it's going to, what you need back — and aims the questions at the gap. What comes back is material for `/grill-with-docs` or `/to-spec`.
 - **`/wizard`** — for the steps only a **human** can take: provisioning infrastructure, setting up credentials or CI secrets, clicking through an unfamiliar third-party dashboard, running a one-off migration or cutover. It generates an interactive bash script that opens each URL, captures each value, and writes it into `.env` and GitHub secrets — so the procedure stops being something you re-explain to an agent every time. Model-invoked, so the agent reaches for it the moment it hits a wall only you can pass. If the agent could just do it itself, it should; this is for where a human is genuinely in the loop.

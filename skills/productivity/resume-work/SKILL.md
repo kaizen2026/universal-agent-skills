@@ -5,11 +5,11 @@ description: Resume checkpointed work after compaction, interruption, or a host 
 
 # Resume Work
 
-Treat a checkpoint as a claim to verify, not memory to trust blindly.
+Treat a Work-Item Capsule as a claim to verify, not memory to trust blindly.
 
 ## Reconcile before acting
 
-Read `.agents/state/continuity/current.md` or the portable handoff the user supplied. Validate its schema and timestamp, then compare it with:
+Resolve the active capsule from an explicit Work Item ID first, then the current harness session binding. If neither resolves, report that no work item is active. Never choose the newest workspace-wide checkpoint. Validate the capsule schema and timestamp, then compare it with:
 
 - Current repository root, branch, and `HEAD`
 - Current dirty-working-tree inventory
@@ -18,7 +18,7 @@ Read `.agents/state/continuity/current.md` or the portable handoff the user supp
 - Exact test results recorded in the checkpoint
 - Commands that may have been interrupted or left partial output
 
-If the runtime exists, run `node .agents/universal-agent-skills/runtime/cli.mjs resume` to produce the initial reconciliation report. Independently inspect any high-risk divergence it flags.
+If the runtime exists, run `node .agents/universal-agent-skills/runtime/cli.mjs resume` with `--work-item <id>` or the bound `--harness` and `--session` to produce the initial report. Independently inspect any high-risk divergence it flags. A legacy `current.md` or portable handoff may be inspected only through an explicit `--input`; label it inactive evidence rather than an active capsule.
 
 Classify each checkpoint claim as `Confirmed`, `Changed`, `Missing`, or `Unverified`. Never erase or overwrite a dirty tree to make it resemble the checkpoint. Never call a previously passing test current unless it is still valid for the present HEAD; rerun the smallest relevant safe validation when needed.
 

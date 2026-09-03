@@ -11,11 +11,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import {
-  effectiveThreshold,
   ensureConfig,
   ensureGitignore,
   exportHandoff,
@@ -23,7 +23,6 @@ import {
   reconcileCheckpoint,
   redactSensitive,
   saveCheckpoint,
-  thresholdReport,
   validateConfig,
   validateCheckpoint,
 } from "../.agents/universal-agent-skills/runtime/core.mjs";
@@ -33,6 +32,9 @@ import {
   removeAdapters,
 } from "../.agents/universal-agent-skills/runtime/adapters.mjs";
 import { main } from "../.agents/universal-agent-skills/runtime/cli.mjs";
+
+const repository = join(dirname(fileURLToPath(import.meta.url)), "..");
+const setupCli = join(repository, "skills", "engineering", "setup-universal-agent-skills", "scripts", "universal-agent-skills.mjs");
 
 function workspace(t, prefix = "uas-test-") {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -81,21 +83,233 @@ function captureIo(stdin = "") {
   };
 }
 
-test("threshold policy uses 155k and clamps smaller windows to 75%", () => {
-  assert.equal(effectiveThreshold(155000), 155000);
-  assert.equal(effectiveThreshold(155000, 200000), 155000);
-  assert.equal(effectiveThreshold(155000, 128000), 96000);
-  assert.deepEqual(thresholdReport({ thresholdTokens: 155000 }, 128000), {
-    configuredTokens: 155000,
-    detectedContextWindow: 128000,
+function runCli(path, args, { cwd, stdin = "" } = {}) {
+  return spawnSync(process.execPath, [path, ...args], {
+    cwd,
+    input: stdin,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function installFixtureRuntime(root, contextWindow = 200000) {
+  const setup = runCli(setupCli, ["setup", "--hosts", "none", "--context-window", String(contextWindow), "--project", root], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  return join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+}
+
+test("installed CLI migrates schema-v1 configuration and resolves utilization policy", (t) => {
+  const root = workspace(t, "uas-policy-");
+  initGit(root);
+  const configPath = join(root, ".agents", "universal-agent-skills", "config.json");
+  write(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    thresholdTokens: 123456,
+    designRoot: "product/design",
+    stateRoot: "private/continuity",
+    frontendDesignVariants: 3,
+    phaseBoundaryCheckpointing: false,
+    policy: { checkpointUtilization: 0.65 },
+    userExtension: { retained: true },
+  }, null, 2)}\n`);
+
+  const setup = runCli(setupCli, ["setup", "--hosts", "none", "--context-window", "200000", "--project", root], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const migrated = json(configPath);
+  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.thresholdTokens, 123456);
+  assert.equal(migrated.designRoot, "product/design");
+  assert.equal(migrated.stateRoot, "private/continuity");
+  assert.equal(migrated.phaseBoundaryCheckpointing, false);
+  assert.deepEqual(migrated.userExtension, { retained: true });
+  assert.deepEqual(migrated.policy, {
+    checkpointUtilization: 0.65,
+    compactUtilization: 0.78,
+    minimumReserveTokens: 30000,
+    capsuleBudgetTokens: 500,
+  });
+
+  const installedCli = join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  const threshold = runCli(installedCli, ["threshold", "--context-window", "200000", "--project", root], { cwd: root });
+  assert.equal(threshold.status, 0, threshold.stderr);
+  assert.deepEqual(JSON.parse(threshold.stdout), {
+    policy: migrated.policy,
+    detectedContextWindow: 200000,
     contextWindowVerified: true,
-    effectiveTokens: 96000,
-    clamped: true,
-    effectivePercent: 75,
+    checkpointTokens: 130000,
+    compactTokens: 156000,
+    reserveTokens: 44000,
+    capsuleBudgetTokens: 500,
+    effectiveTokens: 156000,
+    effectivePercent: 78,
   });
 });
 
-test("schema v1 requires exactly three frontend design variants", (t) => {
+test("installed CLI activates, checkpoints, and resumes one session-bound work item", (t) => {
+  const root = workspace(t, "uas-work-item-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+
+  const activate = runCli(installedCli, [
+    "activate",
+    "--work-item", "issue-4",
+    "--harness", "codex",
+    "--session", "session-one",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+  assert.deepEqual(JSON.parse(activate.stdout), {
+    ok: true,
+    workItemId: "issue-4",
+    created: true,
+    revision: 0,
+    binding: { harness: "codex", sessionId: "session-one" },
+  });
+
+  const checkpoint = runCli(installedCli, [
+    "checkpoint",
+    "--harness", "codex",
+    "--session", "session-one",
+    "--objective", "Implement issue #4.",
+    "--success-criteria", "The manual lifecycle passes through the installed CLI.",
+    "--phase", "Implementation",
+    "--decisions", "Use one capsule per Work Item ID.",
+    "--validation", "The process-level test is red before implementation.",
+    "--blockers", "None.",
+    "--next", "Run the focused test green.",
+    "--pointers", "https://github.com/kaizen2026/universal-agent-skills/issues/4",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(checkpoint.status, 0, checkpoint.stderr);
+  const saved = JSON.parse(checkpoint.stdout);
+  assert.equal(saved.workItemId, "issue-4");
+  assert.equal(saved.resolution, "session-binding");
+  assert.equal(saved.revision, 1);
+
+  const capsulePath = join(root, ".agents", "state", "continuity", "work-items", "issue-4", "semantic.md");
+  const capsule = readFileSync(capsulePath, "utf8");
+  assert.match(capsule, /^schemaVersion: 1$/m);
+  assert.match(capsule, /^workItemId: issue-4$/m);
+  assert.match(capsule, /^revision: 1$/m);
+  assert.match(capsule, /## Objective\s+Implement issue #4\./);
+  assert.match(capsule, /## Success criteria\s+The manual lifecycle passes through the installed CLI\./);
+  assert.match(capsule, /## Next action\s+Run the focused test green\./);
+
+  const resumed = runCli(installedCli, [
+    "resume",
+    "--harness", "codex",
+    "--session", "session-one",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /Resolution: `session-binding`/);
+  assert.match(resumed.stdout, /Work Item: `issue-4`/);
+  assert.match(resumed.stdout, /Implement issue #4\./);
+
+  const second = runCli(installedCli, [
+    "activate",
+    "--work-item", "issue-5",
+    "--harness", "codex",
+    "--session", "session-one",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(second.status, 0, second.stderr);
+  const explicit = runCli(installedCli, [
+    "resume",
+    "--work-item", "issue-4",
+    "--harness", "codex",
+    "--session", "session-one",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.match(explicit.stdout, /Resolution: `explicit`/);
+  assert.match(explicit.stdout, /Work Item: `issue-4`/);
+
+  const unbound = runCli(installedCli, [
+    "resume",
+    "--harness", "codex",
+    "--session", "session-without-binding",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(unbound.status, 2, unbound.stderr);
+  assert.match(unbound.stdout, /No active work item/);
+  assert.doesNotMatch(unbound.stdout, /issue-4/);
+
+  write(join(root, "advance.txt"), "advanced\n");
+  assert.equal(spawnSync("git", ["add", "advance.txt"], { cwd: root, windowsHide: true }).status, 0);
+  assert.equal(spawnSync("git", ["commit", "-m", "advance after capsule"], { cwd: root, windowsHide: true }).status, 0);
+  const stale = runCli(installedCli, [
+    "resume", "--work-item", "issue-4", "--project", root,
+  ], { cwd: root });
+  assert.equal(stale.status, 2, stale.stderr);
+  assert.match(stale.stdout, /\| Git HEAD \| Changed \|/);
+});
+
+test("installed CLI accepts an explicit work item without a session binding", (t) => {
+  const root = workspace(t, "uas-explicit-work-item-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-4", "--harness", "codex", "--session", "initial-session", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+
+  const checkpoint = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-4", "--objective", "Explicit identity wins.", "--project", root,
+  ], { cwd: root });
+  assert.equal(checkpoint.status, 0, checkpoint.stderr);
+  assert.equal(JSON.parse(checkpoint.stdout).resolution, "explicit");
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-4", "semantic.md"), "utf8");
+  assert.match(capsule, /^updatedByHarness: other$/m);
+  assert.match(capsule, /^updatedBySession: manual$/m);
+});
+
+test("installed CLI keeps workspace-wide checkpoints as explicit legacy evidence", (t) => {
+  const root = workspace(t, "uas-legacy-evidence-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  saveCheckpoint({
+    project: root,
+    config,
+    harness: "claude",
+    event: "interruption",
+    fields: {
+      objective: "Legacy objective must not reactivate itself.",
+      next: "Import or inspect this evidence explicitly.",
+    },
+  });
+  const installedCli = installFixtureRuntime(root);
+
+  const automatic = runCli(installedCli, [
+    "resume",
+    "--harness", "codex",
+    "--session", "unbound-session",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(automatic.status, 2, automatic.stderr);
+  assert.match(automatic.stdout, /No active work item/);
+  assert.doesNotMatch(automatic.stdout, /Legacy objective/);
+
+  const hook = runCli(installedCli, [
+    "hook", "codex", "SessionStart", "--project", root,
+  ], { cwd: root, stdin: JSON.stringify({ session_id: "unbound-session" }) });
+  assert.equal(hook.status, 0, hook.stderr);
+  const hookContext = JSON.parse(hook.stdout).hookSpecificOutput.additionalContext;
+  assert.match(hookContext, /No active work item/);
+  assert.doesNotMatch(hookContext, /Legacy objective/);
+
+  const explicit = runCli(installedCli, [
+    "resume",
+    "--input", join(config.stateRoot, "current.md"),
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.match(explicit.stdout, /Legacy continuity evidence \(explicit only\)/);
+  assert.match(explicit.stdout, /Legacy objective must not reactivate itself\./);
+});
+
+test("schema v2 requires valid policy and exactly three frontend design variants", (t) => {
   const root = workspace(t, "uas-config-shape-");
   const valid = ensureConfig(root).config;
   assert.doesNotThrow(() => validateConfig(valid));
@@ -105,6 +319,18 @@ test("schema v1 requires exactly three frontend design variants", (t) => {
   );
   assert.throws(() => validateConfig({ ...valid, phaseBoundaryCheckpointing: "yes" }), /must be a boolean/);
   assert.throws(() => validateConfig({ ...valid, stateRoot: "../outside" }), /project-relative path/);
+  assert.throws(
+    () => validateConfig({ ...valid, policy: { ...valid.policy, checkpointUtilization: 0.8 } }),
+    /compactUtilization must be greater/,
+  );
+  assert.throws(
+    () => validateConfig({ ...valid, policy: { ...valid.policy, minimumReserveTokens: 0 } }),
+    /minimumReserveTokens must be a positive integer/,
+  );
+  assert.throws(
+    () => validateConfig({ ...valid, policy: { ...valid.policy, checkpointUtilization: "0.68" } }),
+    /checkpointUtilization must be a number/,
+  );
   const custom = { ...valid, stateRoot: "private/checkpoints" };
   assert.doesNotThrow(() => validateConfig(custom));
   ensureGitignore(root, custom);
@@ -235,7 +461,7 @@ test("checkpoint refresh archives the prior version and updates supplied section
   assert.equal(stale.claims.find((claim) => claim.item === "Git HEAD").status, "Changed");
 });
 
-test("automatic lifecycle observations preserve semantic provenance", async (t) => {
+test("legacy lifecycle observations preserve provenance without reactivation", async (t) => {
   const root = workspace(t);
   initGit(root);
   const { config } = ensureConfig(root);
@@ -269,7 +495,9 @@ test("automatic lifecycle observations preserve semantic provenance", async (t) 
   const sessionStart = captureIo();
   await main(["hook", "codex", "SessionStart", "--project", root], sessionStart.io);
   const injected = JSON.parse(sessionStart.writes.at(-1));
-  assert.match(injected.hookSpecificOutput.additionalContext, /requires reconciliation/i);
+  assert.match(injected.hookSpecificOutput.additionalContext, /was not activated/i);
+  assert.match(injected.hookSpecificOutput.additionalContext, /No active work item/i);
+  assert.doesNotMatch(injected.hookSpecificOutput.additionalContext, /Keep the validation claim/);
 });
 
 test("checkpoint schema rejects stale timestamps, unsupported enums, and heading reordering", (t) => {
@@ -315,29 +543,31 @@ test("resume reports missing local state instead of inventing continuity", (t) =
   assert.match(result.report, /reconstruct state from tracked issues, specs, ADRs, design contracts, and commits/i);
 });
 
-test("host-neutral checkpoints resume from Claude to Codex and Cursor to Copilot", async (t) => {
+test("host-neutral work items resume through an explicitly joined destination session", async (t) => {
   for (const [origin, destination] of [["claude", "codex"], ["cursor", "copilot"]]) {
     const root = workspace(t, `uas-${origin}-to-${destination}-`);
     initGit(root);
-    const { config } = ensureConfig(root);
-    ensureGitignore(root, config);
-    saveCheckpoint({
-      project: root,
-      config,
-      harness: origin,
-      event: "interruption",
-      fields: {
-        objective: `Resume ${origin} work in ${destination}.`,
-        completed: "`node --test`: exit 1; failure preserved for follow-up.",
-        risks: "An interrupted fixture command still needs investigation.",
-        next: "Rerun the failing fixture command.",
-      },
-    });
+    const originSession = `${origin}-session`;
+    const destinationSession = `${destination}-session`;
+    const activation = captureIo();
+    await main(["activate", "--work-item", "fixture-work", "--harness", origin, "--session", originSession, "--project", root], activation.io);
+    const checkpointCapture = captureIo();
+    await main([
+      "checkpoint",
+      "--harness", origin,
+      "--session", originSession,
+      "--objective", `Resume ${origin} work in ${destination}.`,
+      "--validation", "`node --test`: exit 1; failure preserved for follow-up.",
+      "--blockers", "An interrupted fixture command still needs investigation.",
+      "--next", "Rerun the failing fixture command.",
+      "--project", root,
+    ], checkpointCapture.io);
+    const joinCapture = captureIo();
+    await main(["activate", "--work-item", "fixture-work", "--harness", destination, "--session", destinationSession, "--project", root], joinCapture.io);
     const capture = captureIo();
-    await main(["hook", destination, "SessionStart", "--project", root], capture.io);
-    const output = JSON.parse(capture.writes.at(-1));
-    const context = destination === "copilot" ? output.additionalContext : output.hookSpecificOutput.additionalContext;
-    assert.match(context, new RegExp(`originatingHarness: ${origin}`));
+    await main(["resume", "--harness", destination, "--session", destinationSession, "--project", root], capture.io);
+    const context = capture.writes.at(-1);
+    assert.match(context, new RegExp(`updatedByHarness: ${origin}`));
     assert.match(context, /exit 1; failure preserved/);
     assert.match(context, /Rerun the failing fixture command/);
   }
@@ -372,7 +602,7 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   assert.equal(first.every((item) => item.status === "Configured"), true);
 
   const codexConfigPath = join(root, ".codex", "config.toml");
-  assert.match(readFileSync(codexConfigPath, "utf8"), /model_auto_compact_token_limit = 96000 # universal-agent-skills/);
+  assert.match(readFileSync(codexConfigPath, "utf8"), /model_auto_compact_token_limit = 98000 # universal-agent-skills/);
   assert.match(readFileSync(codexConfigPath, "utf8"), /example = true/);
   const codexHooks = json(join(root, ".codex", "hooks.json"));
   assert.equal(codexHooks.hooks.Stop[0].hooks[0].command, "user-stop");
@@ -467,10 +697,10 @@ test("Claude status line labels telemetry per harness and keeps the Antigravity 
   });
   const claude = captureIo(payload);
   await main(["statusline", "--harness", "claude", "--project", root], claude.io);
-  assert.equal(claude.writes.join("").trim(), "Claude 87000/155000");
+  assert.equal(claude.writes.join("").trim(), "Claude 87000/780000");
   const antigravity = captureIo(payload);
   await main(["statusline", "--project", root], antigravity.io);
-  assert.equal(antigravity.writes.join("").trim(), "UAS 87000/155000");
+  assert.equal(antigravity.writes.join("").trim(), "UAS 87000/780000");
 });
 
 test("Antigravity preserves an existing custom status line and reports partial setup", (t) => {
@@ -508,7 +738,7 @@ test("CLI requires an explicit adapter choice but supports portable-only setup",
   const result = await main(["setup", "--hosts", "none", "--project", root, "--context-window", "128000"], portable.io);
   assert.equal(result.ok, true);
   assert.equal(result.adapters.length, 0);
-  assert.equal(result.threshold.effectiveTokens, 96000);
+  assert.equal(result.threshold.effectiveTokens, 98000);
   assert.equal(existsSync(join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs")), true);
   assert.match(readFileSync(join(root, ".gitignore"), "utf8"), /\.agents\/state\/continuity\//);
 
@@ -516,10 +746,10 @@ test("CLI requires an explicit adapter choice but supports portable-only setup",
   await main(["setup", "--hosts", "cursor", "--project", root, "--context-window", "128000"], configured.io);
   const statusCapture = captureIo();
   const statusResult = await main(["status", "--project", root], statusCapture.io);
-  assert.equal(statusResult.threshold.effectiveTokens, 96000);
+  assert.equal(statusResult.threshold.effectiveTokens, 98000);
   assert.equal(statusResult.threshold.currentSessionVerified, false);
   assert.match(statusResult.threshold.source, /stored setup input/);
-  assert.equal(statusResult.adapters.find((item) => item.host === "cursor").installedThreshold.effectiveTokens, 96000);
+  assert.equal(statusResult.adapters.find((item) => item.host === "cursor").installedThreshold.effectiveTokens, 98000);
 });
 
 test("adapter status detects drift and missing reversal state fails safely", async (t) => {
@@ -567,7 +797,7 @@ test("adapter status detects drift and missing reversal state fails safely", asy
   );
   const removal = removeAdapters({ project: root, hosts: ["codex"] });
   assert.equal(removal[0].removed, false);
-  assert.match(readFileSync(join(root, ".codex", "config.toml"), "utf8"), /96000 # universal-agent-skills/);
+  assert.match(readFileSync(join(root, ".codex", "config.toml"), "utf8"), /98000 # universal-agent-skills/);
 });
 
 test("Cursor hook consumes native telemetry and keeps state at the configured project root", async (t) => {
@@ -579,7 +809,7 @@ test("Cursor hook consumes native telemetry and keeps state at the configured pr
   await main(["hook", "cursor", "preCompact", "--project", root], capture.io);
   const output = JSON.parse(capture.writes.at(-1));
   assert.match(output.user_message, /100000\/128000/);
-  assert.match(output.user_message, /policy threshold 96000/);
+  assert.match(output.user_message, /policy threshold 98000/);
   assert.equal(existsSync(join(root, ".agents", "state", "continuity", "current.md")), true);
   assert.equal(existsSync(join(nested, ".agents")), false);
 });

@@ -12,7 +12,9 @@ Node.js is required for the zero-dependency runtime. Host commands or config dir
 
 ## Capability before configuration
 
-The setup report distinguishes portable skills, the explicit checkpoint/resume/handoff runtime, and native host adapters. Each adapter then names whether its host offers checkpoint hooks, telemetry, host-controlled compaction, or a threshold override. The report also computes the effective token threshold, preserving 155,000 by default and clamping smaller context windows to 75%.
+The setup report distinguishes portable skills, the explicit activate/checkpoint/resume runtime, and native host adapters. The model-neutral policy checkpoints at 68% utilization, targets [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction) at 78%, preserves at least 30,000 tokens, and caps capsule injection at 500 tokens. Against a known [context window](https://www.aihero.dev/ai-coding-dictionary/context-window), setup reports the effective checkpoint threshold, compact threshold, and actual reserve.
+
+Schema-v1 configuration is migrated compatibly: existing and user-defined fields are retained, while the new policy becomes authoritative. The old literal threshold remains migration evidence rather than a cross-host control.
 
 ## Common questions
 

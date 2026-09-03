@@ -18,8 +18,8 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 | Large foggy effort | wayfinder → spec → tickets → implement |
 | Visual decision | resolved prerequisites → frontend-design → frontend-build → frontend-review |
 | Logic decision | prototype → record verdict → implementation |
-| Long session boundary | checkpoint-work → host compaction → resume-work |
-| Work must travel | checkpoint-work → handoff → resume-work |
+| Long session boundary | activate Work Item ID → checkpoint-work → host compaction → resume-work |
+| Work must travel | activate Work Item ID → checkpoint-work → handoff → resume-work |
 
 ## Common questions
 
@@ -35,7 +35,7 @@ No. It can route to checkpointing and report host capability. Actual compaction 
 
 - The route names where the human must decide and where evidence is recorded.
 - Frontend work does not jump from a foggy idea directly into production code.
-- Long work names checkpoint, compaction, and reconciliation as separate acts.
+- Long work names activation, checkpoint, compaction, and reconciliation as separate acts.
 
 ## Where it fits
 

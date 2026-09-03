@@ -18,13 +18,29 @@ A `wayfinder` unit — a child **Issue** of a `wayfinder:map` holding a *questio
 **Triage role**:
 A canonical state-machine label applied to an **Issue** during triage (e.g. `needs-triage`, `ready-for-afk`). Each role maps to a real label string in the **Issue tracker** via `docs/agents/triage-labels.md`.
 
+**Continuity Epoch**:
+One uninterrupted span of agent work between initial session start or reconciled native compaction and the next continuity boundary.
+
+**Work-Item Capsule**:
+A small, revisioned semantic record shared by agents collaborating on one **Issue** or explicit objective. It contains the objective, success criteria, current phase, binding decisions, validation state, blockers, one next action, and pointers to tracked authority.
+
+**Continuity Event**:
+A machine observation associated with one harness, session, agent, work item, lifecycle event, and capsule revision. It is evidence, not semantic authority.
+
+**Fresh-Session Rollover**:
+An outer supervisor's deliberate transition from one completed agent session to a new session using a reconciled **Work-Item Capsule**. It is distinct from native in-session compaction.
+
 ## Relationships
 
 - An **Issue tracker** holds many **Issues**
 - An **Issue** carries one **Triage role** at a time
 - A **Decision ticket** is an **Issue** (a child of a `wayfinder:map`)
+- A **Work-Item Capsule** belongs to one **Issue** or explicit objective and spans one or more **Continuity Epochs**
+- A **Continuity Event** records evidence about a **Work-Item Capsule** without replacing it
+- A **Fresh-Session Rollover** starts a new session only after reconciling a **Work-Item Capsule**
 
 ## Flagged ambiguities
 
 - "backlog" was previously used to mean both the *tool* hosting issues and the *body of work* inside it — resolved: the tool is the **Issue tracker**; "backlog" is no longer used as a domain term.
 - "backlog backend" / "backlog manager" — resolved: collapsed into **Issue tracker**.
+- "handoff" previously covered both native compaction and a new process — resolved: native continuation crosses a **Continuity Epoch** boundary; a new process is a **Fresh-Session Rollover**.

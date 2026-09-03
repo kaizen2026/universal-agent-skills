@@ -1,20 +1,28 @@
 ## What it does
 
-`checkpoint-work` saves a versioned, redacted continuation point under `.agents/state/continuity/`. It records project truth at meaningful boundaries and deliberately avoids raw transcripts or copies of artifacts that already have a durable home.
+`checkpoint-work` saves a versioned, redacted Work-Item Capsule under `.agents/state/continuity/work-items/<work-item-id>/semantic.md`. It records the objective, success criteria, phase, binding decisions, validation, blockers, one next action, and authority pointers for one issue or explicit objective.
+
+The capsule uses deterministic identity resolution and never chooses a workspace-wide latest checkpoint.
+
+| Available identity | Result |
+| --- | --- |
+| Explicit Work Item ID | Use that capsule |
+| Current session binding | Use the bound capsule |
+| Neither | Report no active work item |
 
 ## When to reach for it
 
-Type `/checkpoint-work`, or the agent reaches for it after a consequential decision, at a phase boundary, before compaction, or before interruption. It should not run after every message.
+Type `/checkpoint-work`, or the [agent](https://www.aihero.dev/ai-coding-dictionary/agent) reaches for it after a consequential decision, at a phase boundary, before [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction), or before interruption. Activate the Work Item ID and bind the current [harness](https://www.aihero.dev/ai-coding-dictionary/harness) session before its first checkpoint. It should not run after every message.
 
 ## Prerequisites
 
-Use it inside a workspace where Git status and artifact pointers can be reconciled. The state directory is local and gitignored by default.
+Use it inside a workspace where Git status and artifact pointers can be reconciled. The state directory is local and gitignored by default. The installed runtime provides `activate` and `checkpoint` commands for the manual path.
 
 ## One next action
 
-The checkpoint's sharpest field is one concrete next action. Combined with exact validation and a dirty-tree inventory, it lets a fresh session start from evidence rather than reconstructing chat.
+The capsule's sharpest field is one concrete next action. Combined with exact validation and authority pointers, it lets a later continuity epoch start from evidence rather than reconstructing chat.
 
-Automatic lifecycle hooks preserve the provenance of an existing semantic checkpoint and add only an observation. They cannot infer objective, decisions, or test meaning; when no semantic checkpoint exists, their placeholders say so.
+Every successful semantic write advances the capsule revision and records update provenance. Automatic lifecycle hooks cannot infer objective, decisions, or test meaning; the phase-aware capsule remains the semantic authority.
 
 ## Common questions
 
@@ -26,11 +34,16 @@ Transcripts are noisy, sensitive, host-specific, and often unstable. A checkpoin
 
 Only if the environment preserves local state. A gitignored checkpoint disappears with an ephemeral worker, so tracked issues, specs, ADRs, contracts, and commits remain the team source of truth.
 
+**What happened to `current.md`?**
+
+Existing workspace-wide checkpoints remain readable as explicit legacy evidence. They are never selected automatically or treated as an active Work-Item Capsule.
+
 ## It's working if
 
-- The dirty inventory matches `git status` exactly.
+- The capsule path names the intended Work Item ID and its revision increases after each update.
 - Validation entries name commands and results, not "tests pass" in the abstract.
-- No credential or personal data appears in current or history files.
+- Resume by session binding returns the same Work Item ID, while an unbound session returns no active work item.
+- No credential or personal data appears in capsule or legacy evidence files.
 
 ## Where it fits
 

@@ -1,14 +1,22 @@
 ## What it does
 
-`resume-work` reconciles a checkpoint or handoff against current Git, files, issues, design contracts, and test evidence before work continues. It treats saved prose as a claim, never as unquestioned memory.
+`resume-work` resolves and reconciles a Work-Item Capsule against current Git, files, issues, design contracts, and test evidence before work continues. It treats saved prose as a claim, never as unquestioned memory.
+
+The capsule uses deterministic identity resolution, and a workspace-wide latest checkpoint is never a fallback.
+
+| Available identity | Result |
+| --- | --- |
+| Explicit Work Item ID | Resume that capsule |
+| Current [harness](https://www.aihero.dev/ai-coding-dictionary/harness) session binding | Resume the bound capsule |
+| Neither | Report no active work item |
 
 ## When to reach for it
 
-Type `/resume-work`, or the agent reaches for it after compaction, interruption, a host change, or a portable handoff. If there is no saved state, it reconstructs only from durable tracked artifacts and says what remains unknown.
+Type `/resume-work`, or the [agent](https://www.aihero.dev/ai-coding-dictionary/agent) reaches for it after [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction), interruption, a host change, or a portable handoff. Supply a Work Item ID explicitly or resume from the current session binding. If neither exists, it reconstructs only from durable tracked artifacts and says what remains unknown.
 
 ## Prerequisites
 
-Provide `.agents/state/continuity/current.md` in the same workspace or a portable handoff path. Access to the relevant issue tracker and test environment improves reconciliation.
+Provide a capsule under `.agents/state/continuity/work-items/`, an active session binding, or a portable handoff path. Access to the relevant issue tracker and test environment improves reconciliation.
 
 ## Confirmed, changed, missing, unverified
 
@@ -25,6 +33,10 @@ No. It preserves current work and reports divergence. Destructive restoration is
 **Does it rerun the entire test suite?**
 
 Not automatically. It reruns the smallest relevant safe validation when the old result is no longer trustworthy and reports the rest as unverified.
+
+**Can an old `current.md` resume itself?**
+
+No. It can be inspected through an explicit input path as inactive legacy evidence, but it cannot activate an objective or be injected into an unbound session.
 
 ## It's working if
 

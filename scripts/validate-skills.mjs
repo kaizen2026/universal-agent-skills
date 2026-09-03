@@ -123,8 +123,13 @@ for (const directory of promotedRoots) {
 
 const config = JSON.parse(read(".agents/universal-agent-skills/config.json"));
 const expectedConfig = {
-  schemaVersion: 1,
-  thresholdTokens: 155000,
+  schemaVersion: 2,
+  policy: {
+    checkpointUtilization: 0.68,
+    compactUtilization: 0.78,
+    minimumReserveTokens: 30000,
+    capsuleBudgetTokens: 500,
+  },
   designRoot: "docs/design",
   stateRoot: ".agents/state/continuity",
   frontendDesignVariants: 3,

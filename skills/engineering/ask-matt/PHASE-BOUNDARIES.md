@@ -10,9 +10,9 @@ Work top to bottom. The first yes wins.
 
 1. **Can you continue safely in this session?** Continue when the next phase needs this conversation as a primary source and the host reports enough context capacity. This loses nothing.
 2. **Is the current context irrelevant to the next phase?** If so, use the host's explicit clear or new-session operation. The old session may remain resumable, but that behavior is host-specific.
-3. **Must the work travel?** Create `/checkpoint-work`, then `/handoff` when moving to another harness, directory, cloud job, collaborator, or isolated side task. The handoff is a redacted portable copy; it points to tracked sources instead of duplicating them.
+3. **Must the work travel?** Activate the issue or explicit objective as a Work Item ID, create `/checkpoint-work`, then `/handoff` when moving to another harness, directory, cloud job, collaborator, or isolated side task. The handoff is a redacted portable copy; it points to tracked sources instead of duplicating them.
 4. **Can a bounded side task run independently?** Delegate it and keep this session intact. Give the worker stable artifact and commit pointers, not conversational memory alone.
-5. **Does relevant work need a smaller context in this same host?** Create `/checkpoint-work`, then use the host's supported compaction lifecycle. On continuation, run `/resume-work` or rely on a configured adapter's reconciliation context.
+5. **Does relevant work need a smaller context in this same host?** Activate and bind its Work Item ID, create `/checkpoint-work`, then use the host's supported compaction lifecycle. On continuation, run `/resume-work` with the explicit ID or current session binding, or rely on a configured adapter's reconciliation context.
 6. **Is the host unable to compact or preserve local state?** Export `/handoff`, start the replacement session explicitly, and reconcile there. A skill cannot universally launch that session.
 
 ## Context moves and their cost
@@ -21,7 +21,7 @@ Work top to bottom. The first yes wins.
 | --- | --- | --- | --- |
 | Continue | Yes | None required | Context capacity |
 | Clear or new session | No | Tracked artifacts only unless checkpointed | Command and resume behavior |
-| Checkpoint | No | Local, versioned, gitignored state | None beyond file access |
+| Checkpoint | No | Local, revisioned, gitignored Work-Item Capsule | None beyond file access |
 | Handoff | No | Redacted portable Markdown | None beyond file access |
 | Delegation | No | Worker report and referenced artifacts | Agent support |
 | Native compaction | No; the host summarizes | Checkpoint plus host summary | Hook and compaction support |

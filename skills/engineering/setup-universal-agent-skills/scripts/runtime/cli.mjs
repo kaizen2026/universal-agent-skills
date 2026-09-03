@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  activateWorkItem,
   ensureConfig,
   ensureGitignore,
   exportHandoff,
@@ -11,9 +12,11 @@ import {
   loadConfig,
   readJson,
   reconcileCheckpoint,
+  reconcileWorkItem,
   redactSensitive,
   resolveProjectPath,
   saveCheckpoint,
+  saveWorkItemCapsule,
   thresholdReport,
   validateCheckpoint,
   writeJsonAtomic,
@@ -32,6 +35,7 @@ export async function main(argv = process.argv.slice(2), io = defaultIo()) {
     if (command === "remove") return remove(project, args, io);
     if (command === "status") return status(project, args, io);
     if (command === "threshold") return threshold(project, args, io);
+    if (command === "activate") return activate(project, args, io);
     if (command === "checkpoint") return checkpoint(project, args, io);
     if (command === "validate") return validate(project, args, io);
     if (command === "resume") return resume(project, args, io);
@@ -130,34 +134,60 @@ function threshold(project, args, io) {
   return output;
 }
 
+function activate(project, args, io) {
+  const { config } = ensureConfig(project);
+  ensureGitignore(project, config);
+  const result = activateWorkItem({
+    project,
+    config,
+    workItemId: args["work-item"],
+    harness: args.harness,
+    sessionId: args.session,
+  });
+  const output = {
+    ok: true,
+    workItemId: result.workItemId,
+    created: result.created,
+    revision: result.revision,
+    binding: { harness: result.binding.harness, sessionId: result.binding.sessionId },
+  };
+  io.write(JSON.stringify(output, null, 2));
+  return output;
+}
+
 function checkpoint(project, args, io) {
   const { config } = ensureConfig(project);
   ensureGitignore(project, config);
-  const fields = {
-    objective: args.objective,
-    phase: args.phase,
-    decisions: args.decisions,
-    completed: joinValues(args.completed, args.validation),
-    pointers: args.pointers,
-    risks: args.risks,
-    next: args.next,
-    skills: args.skills,
-    status: args.status,
-    refreshExisting: !args.fresh,
+  const workItem = saveWorkItemCapsule({
+    project,
+    config,
+    workItemId: args["work-item"],
+    harness: args.harness,
+    sessionId: args.session,
+    fields: {
+      objective: args.objective,
+      successCriteria: args["success-criteria"],
+      phase: args.phase,
+      decisions: args.decisions,
+      validation: joinValues(args.completed, args.validation),
+      blockers: args.blockers || args.risks,
+      next: args.next,
+      pointers: args.pointers,
+    },
+  });
+  if (!workItem.ok) {
+    io.write(workItem.reason);
+    io.setExitCode(2);
+    return workItem;
+  }
+  const output = {
+    ok: true,
+    scope: "work-item",
+    workItemId: workItem.workItemId,
+    resolution: workItem.resolution,
+    path: workItem.paths.capsule,
+    revision: workItem.revision,
   };
-  fields.preserveClaims = !args.fresh && ![
-    fields.objective,
-    fields.phase,
-    fields.decisions,
-    fields.completed,
-    fields.pointers,
-    fields.risks,
-    fields.next,
-    fields.skills,
-    fields.status,
-  ].some(Boolean);
-  const saved = saveCheckpoint({ project, config, harness: args.harness || "other", event: args.event || "manual", fields });
-  const output = { ok: true, path: saved.path, timestamp: saved.validation.metadata.timestamp, valid: true };
   io.write(JSON.stringify(output, null, 2));
   return output;
 }
@@ -174,7 +204,23 @@ function validate(project, args, io) {
 
 function resume(project, args, io) {
   const { config } = loadConfig(project);
-  const result = reconcileCheckpoint(project, config, args.input);
+  let result;
+  if (args.input) {
+    const legacy = reconcileCheckpoint(project, config, args.input);
+    result = {
+      ...legacy,
+      resolution: "explicit-legacy-evidence",
+      report: `# Legacy continuity evidence (explicit only)\n\nThis workspace-wide checkpoint is inactive and was not selected as a Work-Item Capsule.\n\n${legacy.report}`,
+    };
+  } else {
+    result = reconcileWorkItem({
+      project,
+      config,
+      workItemId: args["work-item"],
+      harness: args.harness,
+      sessionId: args.session,
+    });
+  }
   io.write(result.report);
   if (!result.ok) io.setExitCode(2);
   return result;
@@ -187,7 +233,7 @@ function handoff(project, args, io) {
   return result;
 }
 
-function hook(project, rawArgs, _args, io) {
+function hook(project, rawArgs, args, io) {
   const host = rawArgs[0];
   const event = rawArgs[1];
   if (!HOSTS.includes(host)) throw new Error(`Unknown hook host: ${host}`);
@@ -210,10 +256,17 @@ function hook(project, rawArgs, _args, io) {
     return writeHookOutput(host, event, "Compaction completed; reconcile the saved checkpoint before continuing.", "postcompact", io);
   }
   if (normalized.includes("sessionstart") || normalized === "sessionstart") {
-    const result = reconcileCheckpoint(hookProject, config);
-    const context = result.ok
-      ? truncate(result.report, 12000)
-      : `Continuity state requires reconciliation. Do not act on saved claims until Changed and Missing items are resolved.\n\n${truncate(result.report, 12000)}`;
+    const sessionId = input.session_id || input.sessionId || input.conversation_id || input.conversationId;
+    const result = reconcileWorkItem({
+      project: hookProject,
+      config,
+      workItemId: args["work-item"],
+      harness: host,
+      sessionId,
+    });
+    const context = result.workItemId
+      ? `Work item ${result.workItemId} resolved by ${result.resolution}. Automatic capsule injection is not enabled by the manual runtime; run the resume command to reconcile it.`
+      : `Continuity state was not activated. ${result.report}`;
     return writeHookOutput(host, event, context, "sessionstart", io);
   }
   io.write("{}");
@@ -374,10 +427,6 @@ function safeStdinJson(text) {
   }
 }
 
-function truncate(value, max) {
-  return value.length <= max ? value : `${value.slice(0, max)}\n\n[Reconciliation truncated; run /resume-work for the full report.]`;
-}
-
 function printHelp(io) {
   io.write(`Universal Agent Skills runtime
 
@@ -386,9 +435,10 @@ Commands:
   remove --hosts <list> [--project <path>]
   status [--project <path>]
   threshold --context-window <tokens>
-  checkpoint [--harness <name>] [--event <name>] [checkpoint fields]
+  activate --work-item <id> --harness <name> --session <id>
+  checkpoint [--work-item <id> | --harness <name> --session <id>] [capsule fields]
   validate [--input <path>]
-  resume [--input <path>]
+  resume [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>]
   handoff [--input <path>] [--output <path>] [--destination <text>]
   telemetry --harness <name> --tokens <count> --context-window <tokens>
   statusline [--harness antigravity|claude] [--project <path>]  # reads status-line JSON from stdin

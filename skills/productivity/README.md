@@ -12,7 +12,7 @@ General workflow and continuity skills.
 
 ## Model-invoked
 
-- **[checkpoint-work](./checkpoint-work/SKILL.md)** — Save versioned local work state at meaningful boundaries.
+- **[checkpoint-work](./checkpoint-work/SKILL.md)** — Save a revisioned Work-Item Capsule at meaningful boundaries.
 - **[grilling](./grilling/SKILL.md)** — Apply the reusable interview discipline.
-- **[resume-work](./resume-work/SKILL.md)** — Reconcile a checkpoint against current reality before continuing.
+- **[resume-work](./resume-work/SKILL.md)** — Resolve and reconcile an explicit or session-bound Work-Item Capsule.
 - **[writing-for-agents](./writing-for-agents/SKILL.md)** — Write concise instructions and artifacts for agents.

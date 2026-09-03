@@ -17,7 +17,7 @@ Read [HOST-ADAPTERS.md](references/HOST-ADAPTERS.md) and present a capability re
 - Portable runtime for explicit checkpoint, resume, and handoff
 - Native adapter, labelled with the host's actual hook, telemetry, and threshold capabilities
 
-Report the detected context window and effective threshold. Use 155,000 consumed tokens by default. When a detected window is below 200,000, clamp to 75% of that window and show both configured and effective values.
+Report the detected context window and resolved utilization policy. Default to checkpoint utilization 0.68, compact utilization 0.78, a 30,000-token minimum reserve, and a 500-token capsule budget. Show the effective checkpoint tokens, compact tokens, and reserve for the detected capacity. Migrate schema-v1 configuration without dropping user-defined fields; retain its literal threshold only as inactive migration evidence.
 
 ## Confirm choices
 
