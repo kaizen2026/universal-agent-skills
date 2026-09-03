@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -46,6 +47,9 @@ const ALLOWED_HARNESSES = new Set(["codex", "claude", "cursor", "copilot", "anti
 const ALLOWED_EVENTS = new Set(["phase-boundary", "decision", "pre-compact", "interruption", "manual", "threshold-warning", "handoff"]);
 const ALLOWED_STATUSES = new Set(["in-progress", "blocked", "ready-for-review", "complete"]);
 const STALE_CHECKPOINT_MS = 7 * 24 * 60 * 60 * 1000;
+const WORK_ITEM_LOCK_TIMEOUT_MS = 5000;
+const WORK_ITEM_LOCK_RETRY_MS = 20;
+const MAX_PROPOSAL_CHARACTERS = 12000;
 
 export function resolveWithin(root, candidate) {
   const base = resolve(root);
@@ -477,7 +481,12 @@ export function workItemPaths(project, config, workItemId) {
   const id = validateIdentity("workItemId", workItemId);
   const state = checkpointPaths(project, config);
   const root = resolveWithin(state.root, join("work-items", id));
-  return { root, capsule: join(root, "semantic.md") };
+  return {
+    root,
+    capsule: join(root, "semantic.md"),
+    lock: join(root, ".update.lock"),
+    proposals: join(root, "proposals"),
+  };
 }
 
 export function activateWorkItem({ project, config, workItemId, harness, sessionId }) {
@@ -485,25 +494,29 @@ export function activateWorkItem({ project, config, workItemId, harness, session
   const normalizedHarness = validateHarness(harness);
   const normalizedSession = validateIdentity("sessionId", sessionId);
   const paths = workItemPaths(project, config, id);
-  const created = !existsSync(paths.capsule);
-  if (created) {
-    const document = buildCapsule({
-      project,
-      workItemId: id,
-      revision: 0,
-      harness: normalizedHarness,
-      sessionId: normalizedSession,
-      fields: {},
-    });
-    writeTextAtomic(paths.capsule, document);
-  } else {
-    const validation = validateCapsule(readFileSync(paths.capsule, "utf8"), id);
-    if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
-  }
+  const locked = withWorkItemLock(paths, WORK_ITEM_LOCK_TIMEOUT_MS, () => {
+    const created = !existsSync(paths.capsule);
+    if (created) {
+      const document = buildCapsule({
+        project,
+        workItemId: id,
+        revision: 0,
+        harness: normalizedHarness,
+        sessionId: normalizedSession,
+        fields: {},
+      });
+      writeTextAtomic(paths.capsule, document);
+    } else {
+      const validation = validateCapsule(readFileSync(paths.capsule, "utf8"), id);
+      if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
+    }
+    const revision = Number(parseFrontmatter(readFileSync(paths.capsule, "utf8")).revision);
+    return { created, revision };
+  });
+  if (!locked.ok) throw new Error(locked.message);
   const binding = { schemaVersion: 1, workItemId: id, harness: normalizedHarness, sessionId: normalizedSession, boundAt: new Date().toISOString() };
   writeJsonAtomic(sessionBindingPath(project, config, normalizedHarness, normalizedSession), binding);
-  const metadata = parseFrontmatter(readFileSync(paths.capsule, "utf8"));
-  return { workItemId: id, created, revision: Number(metadata.revision), binding };
+  return { workItemId: id, ...locked.value, binding };
 }
 
 export function resolveActiveWorkItem({ project, config, workItemId, harness, sessionId }) {
@@ -530,25 +543,154 @@ export function resolveActiveWorkItem({ project, config, workItemId, harness, se
   return { ok: false, resolution: "none", reason: "No active work item. Supply --work-item or a bound --harness and --session." };
 }
 
-export function saveWorkItemCapsule({ project, config, workItemId, harness, sessionId, fields = {} }) {
+export function saveWorkItemCapsule({
+  project,
+  config,
+  workItemId,
+  harness,
+  sessionId,
+  expectedRevision,
+  lockTimeoutMs = WORK_ITEM_LOCK_TIMEOUT_MS,
+  fields = {},
+}) {
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error("expectedRevision must be a non-negative integer");
+  }
   const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
   if (!resolved.ok) return resolved;
-  const existing = readFileSync(resolved.paths.capsule, "utf8");
-  const validation = validateCapsule(existing, resolved.workItemId);
-  if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
-  const document = buildCapsule({
-    project,
-    workItemId: resolved.workItemId,
-    revision: Number(validation.metadata.revision) + 1,
-    harness: validateHarness(harness || "other"),
-    sessionId: sessionId ? validateIdentity("sessionId", sessionId) : "manual",
-    fields,
-    existing,
+  const locked = withWorkItemLock(resolved.paths, lockTimeoutMs, () => {
+    const existing = readFileSync(resolved.paths.capsule, "utf8");
+    const validation = validateCapsule(existing, resolved.workItemId);
+    if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
+    const currentRevision = Number(validation.metadata.revision);
+    const normalizedHarness = validateHarness(harness || "other");
+    const normalizedSession = sessionId ? validateIdentity("sessionId", sessionId) : "manual";
+    if (expectedRevision !== currentRevision) {
+      const proposal = saveMergeProposal({
+        paths: resolved.paths,
+        workItemId: resolved.workItemId,
+        baseRevision: expectedRevision,
+        currentRevision,
+        harness: normalizedHarness,
+        sessionId: normalizedSession,
+        fields,
+      });
+      return {
+        ...resolved,
+        ok: false,
+        reason: "stale-revision",
+        baseRevision: expectedRevision,
+        currentRevision,
+        proposal,
+      };
+    }
+    const document = buildCapsule({
+      project,
+      workItemId: resolved.workItemId,
+      revision: currentRevision + 1,
+      harness: normalizedHarness,
+      sessionId: normalizedSession,
+      fields,
+      existing,
+    });
+    const updated = validateCapsule(document, resolved.workItemId);
+    if (!updated.valid) throw new Error(`Work-Item Capsule validation failed: ${updated.errors.join("; ")}`);
+    writeTextAtomic(resolved.paths.capsule, document);
+    return { ...resolved, document, revision: Number(updated.metadata.revision) };
   });
-  const updated = validateCapsule(document, resolved.workItemId);
-  if (!updated.valid) throw new Error(`Work-Item Capsule validation failed: ${updated.errors.join("; ")}`);
-  writeTextAtomic(resolved.paths.capsule, document);
-  return { ...resolved, document, revision: Number(updated.metadata.revision) };
+  return locked.ok ? locked.value : { ...resolved, ...locked };
+}
+
+function withWorkItemLock(paths, timeoutMs, action) {
+  const lock = acquireWorkItemLock(paths, timeoutMs);
+  if (!lock.ok) return lock;
+  try {
+    return { ok: true, value: action() };
+  } finally {
+    releaseWorkItemLock(paths.lock, lock.token);
+  }
+}
+
+function acquireWorkItemLock(paths, timeoutMs) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) {
+    throw new Error("lockTimeoutMs must be an integer from 1 through 60000");
+  }
+  mkdirSync(paths.root, { recursive: true });
+  const deadline = Date.now() + timeoutMs;
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  while (true) {
+    try {
+      mkdirSync(paths.lock);
+      writeJsonAtomic(join(paths.lock, "owner.json"), {
+        schemaVersion: 1,
+        token,
+        pid: process.pid,
+        acquiredAt: new Date().toISOString(),
+      });
+      return { ok: true, token };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        return {
+          ok: false,
+          reason: "lock-unavailable",
+          message: "Work-item update lock timed out. The lock was retained; verify its owner is no longer running before removing it manually.",
+        };
+      }
+      sleepSync(Math.min(WORK_ITEM_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
+function releaseWorkItemLock(lockPath, token) {
+  try {
+    const ownerPath = join(lockPath, "owner.json");
+    const owner = readJson(ownerPath, {});
+    if (owner.token !== token) return;
+    unlinkSync(ownerPath);
+    rmdirSync(lockPath);
+  } catch {
+    // A failed ownership check or cleanup leaves the lock in place for manual recovery.
+  }
+}
+
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function saveMergeProposal({ paths, workItemId, baseRevision, currentRevision, harness, sessionId, fields }) {
+  mkdirSync(paths.proposals, { recursive: true });
+  const bounded = boundProposalFields(fields);
+  const proposal = {
+    schemaVersion: 1,
+    workItemId,
+    baseRevision,
+    currentRevision,
+    createdAt: new Date().toISOString(),
+    provenance: { harness, sessionId },
+    fields: bounded.fields,
+    truncated: bounded.truncated,
+  };
+  const stamp = proposal.createdAt.replace(/[-:.]/g, "");
+  let path = join(paths.proposals, `${stamp}-${process.pid}.json`);
+  let suffix = 1;
+  while (existsSync(path)) path = join(paths.proposals, `${stamp}-${process.pid}-${suffix++}.json`);
+  writeTextAtomic(path, `${redactSensitive(JSON.stringify(proposal, null, 2))}\n`);
+  return { path, truncated: proposal.truncated };
+}
+
+function boundProposalFields(fields) {
+  const output = {};
+  let remaining = MAX_PROPOSAL_CHARACTERS;
+  let truncated = false;
+  for (const [field] of CAPSULE_HEADINGS) {
+    if (!fields[field]) continue;
+    const redacted = redactSensitive(fields[field]);
+    if (redacted.length > remaining) truncated = true;
+    output[field] = redacted.slice(0, remaining);
+    remaining = Math.max(0, remaining - output[field].length);
+  }
+  return { fields: output, truncated };
 }
 
 export function reconcileWorkItem({ project, config, workItemId, harness, sessionId }) {

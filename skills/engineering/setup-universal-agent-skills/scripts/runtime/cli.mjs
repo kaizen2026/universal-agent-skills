@@ -164,6 +164,10 @@ function checkpoint(project, args, io) {
     workItemId: args["work-item"],
     harness: args.harness,
     sessionId: args.session,
+    expectedRevision: nonNegativeIntegerArg(args["expected-revision"], "--expected-revision"),
+    lockTimeoutMs: args["lock-timeout-ms"] === undefined
+      ? undefined
+      : positiveIntegerArg(args["lock-timeout-ms"], "--lock-timeout-ms"),
     fields: {
       objective: args.objective,
       successCriteria: args["success-criteria"],
@@ -176,6 +180,20 @@ function checkpoint(project, args, io) {
     },
   });
   if (!workItem.ok) {
+    if (workItem.reason === "stale-revision" || workItem.reason === "lock-unavailable") {
+      const output = {
+        ok: false,
+        reason: workItem.reason,
+        message: workItem.message,
+        workItemId: workItem.workItemId,
+        baseRevision: workItem.baseRevision,
+        currentRevision: workItem.currentRevision,
+        proposal: workItem.proposal,
+      };
+      io.write(JSON.stringify(output, null, 2));
+      io.setExitCode(2);
+      return output;
+    }
     io.write(workItem.reason);
     io.setExitCode(2);
     return workItem;
@@ -414,6 +432,23 @@ function numberArg(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
 }
 
+function nonNegativeIntegerArg(value, name) {
+  return integerArgAtLeast(value, name, 0);
+}
+
+function positiveIntegerArg(value, name) {
+  return integerArgAtLeast(value, name, 1);
+}
+
+function integerArgAtLeast(value, name, minimum) {
+  const number = /^\d+$/.test(String(value)) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(number) || number < minimum) {
+    const range = minimum === 0 ? "a non-negative integer" : `an integer of at least ${minimum}`;
+    throw new Error(`${name} must be ${range}`);
+  }
+  return number;
+}
+
 function joinValues(...values) {
   return values.filter(Boolean).join("\n\n");
 }
@@ -436,7 +471,7 @@ Commands:
   status [--project <path>]
   threshold --context-window <tokens>
   activate --work-item <id> --harness <name> --session <id>
-  checkpoint [--work-item <id> | --harness <name> --session <id>] [capsule fields]
+  checkpoint --expected-revision <n> [--work-item <id> | --harness <name> --session <id>] [capsule fields]
   validate [--input <path>]
   resume [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>]
   handoff [--input <path>] [--output <path>] [--destination <text>]

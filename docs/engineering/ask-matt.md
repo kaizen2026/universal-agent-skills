@@ -4,7 +4,7 @@
 
 ## When to reach for it
 
-You invoke this by typing `/ask-matt` when you know the situation but not which workflow fits. The agent will not invoke the router on its own.
+You invoke this by typing `/ask-matt` when you know the situation but not which workflow fits. The [agent](https://www.aihero.dev/ai-coding-dictionary/agent) will not invoke the router on its own.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 | Large foggy effort | wayfinder → spec → tickets → implement |
 | Visual decision | resolved prerequisites → frontend-design → frontend-build → frontend-review |
 | Logic decision | prototype → record verdict → implementation |
-| Long session boundary | activate Work Item ID → checkpoint-work → host compaction → resume-work |
+| Long session boundary | activate Work Item ID → checkpoint-work → host [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction) → resume-work |
 | Work must travel | activate Work Item ID → checkpoint-work → handoff → resume-work |
 
 ## Common questions
@@ -30,6 +30,10 @@ The router is upstream-derived and widely recognized. Keeping the name preserves
 **Can the router force compaction?**
 
 No. It can route to checkpointing and report host capability. Actual compaction belongs to the host and its opted-in adapter.
+
+**What if two agents checkpoint the same work item?**
+
+The first matching revision advances the capsule. A stale contribution becomes a merge proposal, so the agents can reconcile it without losing newer state.
 
 ## It's working if
 

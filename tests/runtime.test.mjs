@@ -13,7 +13,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 import {
   ensureConfig,
@@ -89,6 +89,25 @@ function runCli(path, args, { cwd, stdin = "" } = {}) {
     input: stdin,
     encoding: "utf8",
     windowsHide: true,
+  });
+}
+
+function runCliAsync(path, args, { cwd, stdin = "" } = {}) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [path, ...args], {
+      cwd,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolvePromise({ status, stdout, stderr }));
+    child.stdin.end(stdin);
   });
 }
 
@@ -170,6 +189,7 @@ test("installed CLI activates, checkpoints, and resumes one session-bound work i
     "checkpoint",
     "--harness", "codex",
     "--session", "session-one",
+    "--expected-revision", "0",
     "--objective", "Implement issue #4.",
     "--success-criteria", "The manual lifecycle passes through the installed CLI.",
     "--phase", "Implementation",
@@ -255,13 +275,170 @@ test("installed CLI accepts an explicit work item without a session binding", (t
   assert.equal(activate.status, 0, activate.stderr);
 
   const checkpoint = runCli(installedCli, [
-    "checkpoint", "--work-item", "issue-4", "--objective", "Explicit identity wins.", "--project", root,
+    "checkpoint", "--work-item", "issue-4", "--expected-revision", "0", "--objective", "Explicit identity wins.", "--project", root,
   ], { cwd: root });
   assert.equal(checkpoint.status, 0, checkpoint.stderr);
   assert.equal(JSON.parse(checkpoint.stdout).resolution, "explicit");
   const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-4", "semantic.md"), "utf8");
   assert.match(capsule, /^updatedByHarness: other$/m);
   assert.match(capsule, /^updatedBySession: manual$/m);
+});
+
+test("installed CLI serializes concurrent first activation of one work item", async (t) => {
+  const root = workspace(t, "uas-concurrent-activation-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const results = await Promise.all(Array.from({ length: 6 }, (_, index) => runCliAsync(installedCli, [
+    "activate", "--work-item", "issue-5", "--harness", "codex", "--session", `joiner-${index + 1}`, "--project", root,
+  ], { cwd: root })));
+
+  assert.equal(results.every((result) => result.status === 0), true, results.map((result) => result.stderr).join("\n"));
+  const activations = results.map((result) => JSON.parse(result.stdout));
+  assert.equal(activations.filter((result) => result.created).length, 1);
+  assert.equal(activations.every((result) => result.revision === 0), true);
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 0$/m);
+  assert.equal(readdirSync(join(root, ".agents", "state", "continuity", "bindings", "codex")).length, 6);
+});
+
+test("installed CLI retains a stale capsule update as a redacted merge proposal", (t) => {
+  const root = workspace(t, "uas-stale-proposal-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-5", "--harness", "codex", "--session", "writer-one", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+
+  const accepted = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--harness", "codex", "--session", "writer-one",
+    "--expected-revision", "0", "--objective", "Accepted update.", "--project", root,
+  ], { cwd: root });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(JSON.parse(accepted.stdout).revision, 1);
+
+  const advanced = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--harness", "codex", "--session", "writer-one",
+    "--expected-revision", "1", "--phase", "Second accepted update.", "--project", root,
+  ], { cwd: root });
+  assert.equal(advanced.status, 0, advanced.stderr);
+  assert.equal(JSON.parse(advanced.stdout).revision, 2);
+
+  const staleObjective = `Preserve ghp_abcdefghijklmnopqrstuvwxyz1234567890 as a proposal. ${"x".repeat(13000)}`;
+  const stale = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--harness", "claude", "--session", "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+    "--expected-revision", "0", "--objective", staleObjective, "--project", root,
+  ], { cwd: root });
+  assert.equal(stale.status, 2, stale.stderr);
+  const result = JSON.parse(stale.stdout);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "stale-revision");
+  assert.equal(result.baseRevision, 0);
+  assert.equal(result.currentRevision, 2);
+  assert.equal(result.proposal.truncated, true);
+
+  const capsulePath = join(root, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md");
+  const capsule = readFileSync(capsulePath, "utf8");
+  assert.match(capsule, /^revision: 2$/m);
+  assert.match(capsule, /Accepted update\./);
+  assert.match(capsule, /Second accepted update\./);
+  assert.doesNotMatch(capsule, /Preserve/);
+
+  const proposalDirectory = join(root, ".agents", "state", "continuity", "work-items", "issue-5", "proposals");
+  const proposalFiles = readdirSync(proposalDirectory);
+  assert.equal(proposalFiles.length, 1);
+  const proposal = json(join(proposalDirectory, proposalFiles[0]));
+  assert.equal(proposal.baseRevision, 0);
+  assert.equal(proposal.currentRevision, 2);
+  assert.deepEqual(proposal.provenance, { harness: "claude", sessionId: "[REDACTED_TOKEN]" });
+  assert.equal(proposal.truncated, true);
+  assert.equal(proposal.fields.objective.length, 12000);
+  assert.match(proposal.fields.objective, /\[REDACTED_TOKEN\]/);
+  assert.doesNotMatch(JSON.stringify(proposal), /ghp_abcdefghijklmnopqrstuvwxyz1234567890/);
+});
+
+test("installed CLI rejects semantic updates without an expected revision", (t) => {
+  const root = workspace(t, "uas-required-revision-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-5", "--harness", "codex", "--session", "writer-one", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+
+  const rejected = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--objective", "No implicit base revision.", "--project", root,
+  ], { cwd: root });
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /--expected-revision must be a non-negative integer/);
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 0$/m);
+  assert.doesNotMatch(capsule, /No implicit base revision/);
+});
+
+test("installed CLI preserves every concurrent child-process contribution", async (t) => {
+  const root = workspace(t, "uas-concurrent-proposals-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-5", "--harness", "codex", "--session", "coordinator", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+
+  const contributions = Array.from({ length: 6 }, (_, index) => `Concurrent contribution ${index + 1}.`);
+  const results = await Promise.all(contributions.map((objective, index) => runCliAsync(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--harness", "codex", "--session", `writer-${index + 1}`,
+    "--expected-revision", "0", "--objective", objective, "--project", root,
+  ], { cwd: root })));
+
+  assert.equal(results.filter((result) => result.status === 0).length, 1, results.map((result) => result.stderr).join("\n"));
+  assert.equal(results.filter((result) => result.status === 2).length, contributions.length - 1);
+  const capsulePath = join(root, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md");
+  const capsule = readFileSync(capsulePath, "utf8");
+  assert.match(capsule, /^revision: 1$/m);
+
+  const proposalDirectory = join(root, ".agents", "state", "continuity", "work-items", "issue-5", "proposals");
+  const proposals = readdirSync(proposalDirectory).map((name) => json(join(proposalDirectory, name)));
+  assert.equal(proposals.length, contributions.length - 1);
+  const persisted = [capsule, ...proposals.map((proposal) => JSON.stringify(proposal))].join("\n");
+  for (const contribution of contributions) assert.match(persisted, new RegExp(contribution.replace(".", "\\.")));
+
+  const resumed = runCli(installedCli, ["resume", "--work-item", "issue-5", "--project", root], { cwd: root });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /Capsule revision: 1/);
+});
+
+test("installed CLI times out without stealing an abandoned work-item lock", (t) => {
+  const root = workspace(t, "uas-abandoned-lock-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-5", "--harness", "codex", "--session", "writer-one", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+
+  const lockDirectory = join(root, ".agents", "state", "continuity", "work-items", "issue-5", ".update.lock");
+  mkdirSync(lockDirectory);
+  write(join(lockDirectory, "owner.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    token: "abandoned-owner",
+    pid: 999999,
+    acquiredAt: "2026-09-01T00:00:00.000Z",
+  }, null, 2)}\n`);
+
+  const blocked = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-5", "--expected-revision", "0", "--objective", "Must not be written.",
+    "--lock-timeout-ms", "50", "--project", root,
+  ], { cwd: root });
+  assert.equal(blocked.status, 2, blocked.stderr);
+  const result = JSON.parse(blocked.stdout);
+  assert.equal(result.reason, "lock-unavailable");
+  assert.match(result.message, /retained.*manually/i);
+  assert.equal(existsSync(lockDirectory), true);
+  assert.equal(json(join(lockDirectory, "owner.json")).token, "abandoned-owner");
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 0$/m);
+  assert.doesNotMatch(capsule, /Must not be written/);
 });
 
 test("installed CLI keeps workspace-wide checkpoints as explicit legacy evidence", (t) => {
@@ -556,6 +733,7 @@ test("host-neutral work items resume through an explicitly joined destination se
       "checkpoint",
       "--harness", origin,
       "--session", originSession,
+      "--expected-revision", "0",
       "--objective", `Resume ${origin} work in ${destination}.`,
       "--validation", "`node --test`: exit 1; failure preserved for follow-up.",
       "--blockers", "An interrupted fixture command still needs investigation.",

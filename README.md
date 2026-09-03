@@ -68,12 +68,13 @@ Portable state lives at:
 ```text
 .agents/state/continuity/
 ├── work-items/<work-item-id>/semantic.md
+├── work-items/<work-item-id>/proposals/*.json
 ├── bindings/<harness>/<session-id>.json
 ├── current.md          # legacy evidence only
 └── history/            # legacy evidence only
 ```
 
-It is gitignored by default. The manual runtime path activates one issue or explicit objective, binds the current harness session, writes a revisioned Work-Item Capsule, and resumes by explicit Work Item ID or that binding. It never falls back to a workspace-wide latest checkpoint. [`checkpoint-work`](./skills/productivity/checkpoint-work/SKILL.md) records the capsule's objective, success criteria, phase, binding decisions, validation, blockers, next action, and authority pointers. [`resume-work`](./skills/productivity/resume-work/SKILL.md) resolves and reconciles it before work continues. Existing `current.md` and `history/` files remain readable only as explicitly requested legacy evidence. [`handoff`](./skills/productivity/handoff/SKILL.md) exports a redacted portable copy when the receiver cannot access local state.
+It is gitignored by default. The manual runtime path activates one issue or explicit objective, binds the current harness session, writes a revisioned Work-Item Capsule, and resumes by explicit Work Item ID or that binding. Each semantic write declares its expected revision and runs under a portable atomic lock. Stale concurrent contributions become bounded, redacted merge proposals instead of overwriting newer state; timed-out locks are retained for verified manual recovery rather than stolen. The runtime never falls back to a workspace-wide latest checkpoint. [`checkpoint-work`](./skills/productivity/checkpoint-work/SKILL.md) records the capsule's objective, success criteria, phase, binding decisions, validation, blockers, next action, and authority pointers. [`resume-work`](./skills/productivity/resume-work/SKILL.md) resolves and reconciles it before work continues. Existing `current.md` and `history/` files remain readable only as explicitly requested legacy evidence. [`handoff`](./skills/productivity/handoff/SKILL.md) exports a redacted portable copy when the receiver cannot access local state.
 
 The zero-dependency Node runtime and public defaults live under [`.agents/universal-agent-skills/`](./.agents/universal-agent-skills/). Its model-neutral policy checkpoints at 68% utilization, targets compaction at 78%, preserves at least 30,000 tokens, and limits capsule injection to 500 tokens. The effective compact threshold is the lower of the utilization target and the capacity remaining after the reserve. Schema-v1 configuration is migrated without dropping user-defined fields; its former literal threshold remains inactive migration evidence.
 

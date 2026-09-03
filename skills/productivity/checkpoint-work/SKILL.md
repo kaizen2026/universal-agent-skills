@@ -15,11 +15,13 @@ Read [SCHEMA.md](references/SCHEMA.md). Identify the Work Item ID and current ha
 
 ## Write safely
 
-Advance the capsule revision and use an ISO-8601 UTC timestamp. Record one concrete next action that a fresh agent can execute without reconstructing the conversation. Existing workspace-wide `current.md` and `history/` files are legacy evidence and must not be selected as the active work item.
+Read the current capsule revision immediately before writing and send it as the expected revision. A matching compare-and-swap update advances the revision and uses an ISO-8601 UTC timestamp. A stale update must leave the capsule unchanged and become a bounded merge proposal under the work item's `proposals/` directory, with its base revision and harness/session provenance. Reconcile that proposal against the current capsule before retrying with a new expected revision.
+
+The runtime serializes the revision check and atomic replacement with a portable directory lock. It waits up to five seconds by default. It never steals a timed-out or abandoned lock: inspect `.update.lock/owner.json`, verify that the owning process is no longer running, and only then remove the work item's `.update.lock` directory manually. Record one concrete next action that a fresh agent can execute without reconstructing the conversation. Existing workspace-wide `current.md` and `history/` files are legacy evidence and must not be selected as the active work item.
 
 Redact credentials, tokens, cookies, connection strings, private keys, personal data, and sensitive command output. Never persist raw transcripts by default. Summarize a secret-dependent result without the secret.
 
-If `.agents/universal-agent-skills/runtime/cli.mjs` exists, use its `activate` command once to create or join the Work Item ID and bind the session, then use `checkpoint` to add provenance, redact, and validate the capsule. An explicit `--work-item` outranks a session binding; without either, stop rather than selecting a workspace-wide checkpoint. Ensure the configured continuity state root (default `.agents/state/continuity/`) is ignored by Git unless the user explicitly chose tracked continuity state.
+If `.agents/universal-agent-skills/runtime/cli.mjs` exists, use its `activate` command once to create or join the Work Item ID and bind the session, then use `checkpoint --expected-revision <n>` to add provenance, redact, and validate the capsule. A stale revision exits without replacing the capsule and reports the proposal path. An explicit `--work-item` outranks a session binding; without either, stop rather than selecting a workspace-wide checkpoint. Ensure the configured continuity state root (default `.agents/state/continuity/`) is ignored by Git unless the user explicitly chose tracked continuity state.
 
 Lifecycle hooks cannot infer the live objective, decisions, test meaning, or next action. The phase-aware manual checkpoint remains the semantic authority for the active Work Item ID.
 
