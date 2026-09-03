@@ -111,6 +111,19 @@ function runCliAsync(path, args, { cwd, stdin = "" } = {}) {
   });
 }
 
+function runInstalledHook(handler, cwd, payload) {
+  const input = typeof payload === "string" ? payload : `${JSON.stringify(payload)}\n`;
+  return process.platform === "win32"
+    ? spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", handler.commandWindows], {
+        cwd, input, encoding: "utf8", windowsHide: true,
+      })
+    : spawnSync("sh", ["-c", handler.command], { cwd, input, encoding: "utf8" });
+}
+
+function readJsonLines(path) {
+  return readFileSync(path, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
 function installFixtureRuntime(root, contextWindow = 200000) {
   const setup = runCli(setupCli, ["setup", "--hosts", "none", "--context-window", String(contextWindow), "--project", root], { cwd: root });
   assert.equal(setup.status, 0, setup.stderr);
@@ -470,9 +483,9 @@ test("installed CLI keeps workspace-wide checkpoints as explicit legacy evidence
 
   const hook = runCli(installedCli, [
     "hook", "codex", "SessionStart", "--project", root,
-  ], { cwd: root, stdin: JSON.stringify({ session_id: "unbound-session" }) });
+  ], { cwd: root, stdin: JSON.stringify({ session_id: "unbound-session", source: "compact" }) });
   assert.equal(hook.status, 0, hook.stderr);
-  const hookContext = JSON.parse(hook.stdout).hookSpecificOutput.additionalContext;
+  const hookContext = JSON.parse(hook.stdout).systemMessage;
   assert.match(hookContext, /No active work item/);
   assert.doesNotMatch(hookContext, /Legacy objective/);
 
@@ -660,7 +673,7 @@ test("legacy lifecycle observations preserve provenance without reactivation", a
   assert.equal(spawnSync("git", ["commit", "-m", "advance"], { cwd: root, windowsHide: true }).status, 0);
 
   const preCompact = captureIo();
-  await main(["hook", "codex", "PreCompact", "--project", root], preCompact.io);
+  await main(["hook", "claude", "PreCompact", "--project", root], preCompact.io);
   const afterDocument = readFileSync(join(root, config.stateRoot, "current.md"), "utf8");
   const after = parseFrontmatter(afterDocument);
   assert.equal(after.timestamp, before.timestamp);
@@ -670,7 +683,7 @@ test("legacy lifecycle observations preserve provenance without reactivation", a
   assert.equal(reconcileCheckpoint(root, config).ok, false);
 
   const sessionStart = captureIo();
-  await main(["hook", "codex", "SessionStart", "--project", root], sessionStart.io);
+  await main(["hook", "claude", "SessionStart", "--project", root], sessionStart.io);
   const injected = JSON.parse(sessionStart.writes.at(-1));
   assert.match(injected.hookSpecificOutput.additionalContext, /was not activated/i);
   assert.match(injected.hookSpecificOutput.additionalContext, /No active work item/i);
@@ -845,6 +858,274 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   assert.equal(existsSync(join(root, ".agents", "universal-agent-skills", "adapters", "antigravity.json")), false);
 });
 
+test("installed Codex adapter resolves configured capacity and reports safe total accounting", (t) => {
+  const root = workspace(t, "uas codex policy path with spaces-");
+  initGit(root);
+  const configPath = join(root, ".codex", "config.toml");
+  write(configPath, [
+    'model = "gpt-test"',
+    "model_context_window = 200000",
+    "model_auto_compact_token_limit = 999",
+    'model_auto_compact_token_limit_scope = "body_after_prefix"',
+    "",
+    "[features]",
+    "example = true",
+    "",
+  ].join("\n"));
+  write(join(root, ".codex", "hooks.json"), JSON.stringify({
+    hooks: { Stop: [{ hooks: [{ type: "command", command: "user-stop" }] }] },
+  }));
+
+  const setup = runCli(setupCli, ["setup", "--hosts", "codex", "--project", root], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const adapter = JSON.parse(setup.stdout).adapters[0];
+  assert.equal(adapter.threshold.detectedContextWindow, 200000);
+  assert.equal(adapter.threshold.contextCapacitySource, "codex-config:model_context_window");
+  assert.equal(adapter.threshold.accountingScope, "total");
+  assert.equal(adapter.threshold.scopeConfidence, "safe-default");
+  assert.equal(adapter.threshold.installedTokenLimit, 156000);
+  assert.equal(adapter.threshold.reserveTokens, 44000);
+
+  const configured = readFileSync(configPath, "utf8");
+  assert.match(configured, /model_auto_compact_token_limit = 156000 # universal-agent-skills/);
+  assert.match(configured, /model_auto_compact_token_limit_scope = "total" # universal-agent-skills/);
+  assert.match(configured, /\[features\]\s+example = true/);
+  const hooks = json(join(root, ".codex", "hooks.json"));
+  assert.equal(hooks.hooks.Stop[0].hooks[0].command, "user-stop");
+  assert.equal(hooks.hooks.SessionStart[0].hooks[0].additionalContextLimit, 500);
+
+  const beforeRepeat = [configured, JSON.stringify(hooks)];
+  const repeat = runCli(setupCli, ["setup", "--hosts", "codex", "--project", root], { cwd: root });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.deepEqual(
+    [readFileSync(configPath, "utf8"), JSON.stringify(json(join(root, ".codex", "hooks.json")))],
+    beforeRepeat,
+  );
+
+  const installedCli = join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  const driftedHooks = json(join(root, ".codex", "hooks.json"));
+  delete driftedHooks.hooks.SessionStart;
+  write(join(root, ".codex", "hooks.json"), JSON.stringify(driftedHooks));
+  const hookDriftStatus = runCli(installedCli, ["status", "--project", root], { cwd: root });
+  assert.equal(hookDriftStatus.status, 0, hookDriftStatus.stderr);
+  assert.equal(JSON.parse(hookDriftStatus.stdout).adapters.find((item) => item.host === "codex").configurationDrift, true);
+  assert.equal(runCli(setupCli, ["setup", "--hosts", "codex", "--project", root], { cwd: root }).status, 0);
+  const repairedHooks = json(join(root, ".codex", "hooks.json"));
+  assert.equal(repairedHooks.hooks.SessionStart[0].hooks[0].additionalContextLimit, 500);
+  assert.equal(repairedHooks.hooks.Stop[0].hooks[0].command, "user-stop");
+
+  write(configPath, configured.replace(/^model_auto_compact_token_limit_scope.*\r?\n/m, ""));
+  const driftedStatus = runCli(installedCli, ["status", "--project", root], { cwd: root });
+  assert.equal(driftedStatus.status, 0, driftedStatus.stderr);
+  const codexStatus = JSON.parse(driftedStatus.stdout).adapters.find((item) => item.host === "codex");
+  assert.equal(codexStatus.configured, false);
+  assert.equal(codexStatus.configurationDrift, true);
+  assert.equal(runCli(setupCli, ["setup", "--hosts", "codex", "--project", root], { cwd: root }).status, 0);
+
+  const removed = runCli(installedCli, ["remove", "--hosts", "codex", "--project", root], { cwd: root });
+  assert.equal(removed.status, 0, removed.stderr);
+  const restored = readFileSync(configPath, "utf8");
+  assert.match(restored, /model_auto_compact_token_limit = 999/);
+  assert.match(restored, /model_auto_compact_token_limit_scope = "body_after_prefix"/);
+  assert.match(restored, /\[features\]\s+example = true/);
+  assert.equal(json(join(root, ".codex", "hooks.json")).hooks.Stop[0].hooks[0].command, "user-stop");
+});
+
+test("installed Codex adapter enables body-after-prefix accounting only with verified reserve", (t) => {
+  const root = workspace(t, "uas-codex-prefix-");
+  initGit(root);
+  const configPath = join(root, ".codex", "config.toml");
+  const evidencePath = join(root, ".agents", "codex-prefix-evidence.json");
+  write(configPath, 'model = "gpt-test"\nmodel_context_window = 200000\n');
+  write(evidencePath, JSON.stringify({
+    kind: "codex-prefix-measurement",
+    source: "observed active Codex session",
+    model: "gpt-test",
+    contextCapacity: 200000,
+    prefixTokens: 20000,
+    observedAt: "2026-09-03T00:00:00.000Z",
+  }));
+  const setup = runCli(setupCli, [
+    "setup", "--hosts", "codex", "--codex-accounting-scope", "body_after_prefix",
+    "--codex-prefix-tokens", "20000", "--codex-prefix-evidence", evidencePath, "--project", root,
+  ], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const threshold = JSON.parse(setup.stdout).adapters[0].threshold;
+  assert.equal(threshold.accountingScope, "body_after_prefix");
+  assert.equal(threshold.scopeConfidence, "evidence-verified-prefix");
+  assert.equal(threshold.prefixTokens, 20000);
+  assert.equal(threshold.prefixVerification.source, "observed active Codex session");
+  assert.equal(threshold.prefixVerification.evidencePath, ".agents/codex-prefix-evidence.json");
+  assert.equal(threshold.installedTokenLimit, 136000);
+  assert.equal(threshold.reserveTokens, 44000);
+  assert.match(readFileSync(configPath, "utf8"), /model_auto_compact_token_limit = 136000 # universal-agent-skills/);
+  assert.match(readFileSync(configPath, "utf8"), /model_auto_compact_token_limit_scope = "body_after_prefix" # universal-agent-skills/);
+
+  const unsafeRoot = workspace(t, "uas-codex-unverified-prefix-");
+  initGit(unsafeRoot);
+  const unsafeConfig = join(unsafeRoot, ".codex", "config.toml");
+  write(unsafeConfig, 'model = "gpt-test"\nmodel_context_window = 200000\n');
+  const before = readFileSync(unsafeConfig, "utf8");
+  const rejected = runCli(setupCli, [
+    "setup", "--hosts", "codex", "--codex-accounting-scope", "body_after_prefix",
+    "--codex-prefix-tokens", "20000", "--project", unsafeRoot,
+  ], { cwd: unsafeRoot });
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /requires --codex-prefix-evidence/);
+  assert.equal(readFileSync(unsafeConfig, "utf8"), before);
+});
+
+test("installed Codex hooks continue one bound work item exactly once through compaction", (t) => {
+  const root = workspace(t, "uas codex lifecycle path with spaces-");
+  initGit(root);
+  const setup = runCli(setupCli, [
+    "setup", "--hosts", "codex", "--context-window", "200000", "--project", root,
+  ], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const installedCli = join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-6", "--harness", "codex", "--session", "codex-session-a", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+  const longText = "A".repeat(800);
+  const checkpoint = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-6", "--harness", "codex", "--session", "codex-session-a",
+    "--expected-revision", "0",
+    "--objective", `Keep objective ghp_abcdefghijklmnopqrstuvwxyz1234567890. ${longText}`,
+    "--success-criteria", `Keep success criteria. ${longText}`,
+    "--phase", `Implementation phase. ${longText}`,
+    "--decisions", `Keep binding decisions. ${longText}`,
+    "--validation", `npm test exits zero. ${longText}`,
+    "--blockers", `No blockers. ${longText}`,
+    "--next", `Implement the next slice. ${longText}`,
+    "--pointers", "[README](README.md)",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(checkpoint.status, 0, checkpoint.stderr);
+
+  const hooks = json(join(root, ".codex", "hooks.json")).hooks;
+  const handlers = Object.fromEntries(["PreCompact", "PostCompact", "SessionStart"].map((event) => [
+    event, hooks[event][0].hooks[0],
+  ]));
+  const nested = join(root, "packages", "space app");
+  mkdirSync(nested, { recursive: true });
+  const common = { session_id: "codex-session-a", cwd: root, model: "gpt-5.5" };
+  const pre = { ...common, hook_event_name: "PreCompact", turn_id: "turn-1", trigger: "auto" };
+  const post = { ...common, hook_event_name: "PostCompact", turn_id: "turn-1", trigger: "auto" };
+  const start = { ...common, hook_event_name: "SessionStart", source: "compact", permission_mode: "default" };
+
+  for (const [event, payload] of [["PreCompact", pre], ["PreCompact", pre], ["PostCompact", post], ["PostCompact", post]]) {
+    const invocation = runInstalledHook(handlers[event], nested, payload);
+    assert.equal(invocation.status, 0, invocation.stderr);
+    assert.doesNotThrow(() => JSON.parse(invocation.stdout));
+  }
+  const firstStart = runInstalledHook(handlers.SessionStart, nested, start);
+  const duplicateStart = runInstalledHook(handlers.SessionStart, nested, start);
+  assert.equal(firstStart.status, 0, firstStart.stderr);
+  assert.equal(duplicateStart.status, 0, duplicateStart.stderr);
+  const firstOutput = JSON.parse(firstStart.stdout);
+  const duplicateOutput = JSON.parse(duplicateStart.stdout);
+  const context = firstOutput.hookSpecificOutput.additionalContext;
+  assert.equal(Buffer.byteLength(context, "utf8") <= 500, true);
+  for (const label of ["Objective", "Success criteria", "Current phase", "Binding decisions", "Validation state", "Blockers", "Next action", "Authority pointers"]) {
+    assert.match(context, new RegExp(`${label}:`));
+  }
+  assert.doesNotMatch(context, /ghp_abcdefghijklmnopqrstuvwxyz1234567890/);
+  assert.match(context, /\[REDACTED_TOKEN\]/);
+  assert.equal(Object.hasOwn(duplicateOutput, "hookSpecificOutput"), false);
+  assert.match(duplicateOutput.systemMessage, /duplicate/i);
+
+  const eventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-6", "events.jsonl");
+  const events = readJsonLines(eventsPath);
+  assert.deepEqual(events.map((event) => event.kind), ["pre-compact", "post-compact", "session-start-compact"]);
+  assert.equal(new Set(events.map((event) => event.idempotencyKey)).size, 3);
+  assert.equal(events[0].transition, "checkpoint-recorded");
+  assert.equal(events[1].transition, "compaction-recorded");
+  assert.equal(events[2].transition, "reconciled-and-injected");
+  assert.equal(events[2].injectedTokenEstimate <= 500, true);
+  assert.equal(events.every((event) => event.capsuleRevision === 1), true);
+  assert.doesNotMatch(readFileSync(eventsPath, "utf8"), /permission_mode|Keep objective|ghp_/);
+
+  const unbound = runInstalledHook(handlers.SessionStart, nested, {
+    ...start, session_id: "unbound-session",
+  });
+  assert.equal(unbound.status, 0, unbound.stderr);
+  const unboundOutput = JSON.parse(unbound.stdout);
+  assert.equal(Object.hasOwn(unboundOutput, "hookSpecificOutput"), false);
+  assert.match(unboundOutput.systemMessage, /No active work item/);
+  assert.doesNotMatch(unbound.stdout, /Keep objective/);
+  assert.equal(readJsonLines(eventsPath).length, 3);
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-6", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 1$/m);
+});
+
+test("installed Codex hooks fail open on malformed input, reconciliation drift, and storage errors", (t) => {
+  const root = workspace(t, "uas codex degraded path with spaces-");
+  initGit(root);
+  const setup = runCli(setupCli, [
+    "setup", "--hosts", "codex", "--context-window", "200000", "--project", root,
+  ], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const installedCli = join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-6", "--harness", "codex", "--session", "codex-session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-6", "--harness", "codex", "--session", "codex-session-a",
+    "--expected-revision", "0", "--objective", "Continue safely.", "--project", root,
+  ], { cwd: root }).status, 0);
+  const hooks = json(join(root, ".codex", "hooks.json")).hooks;
+  const preHandler = hooks.PreCompact[0].hooks[0];
+  const postHandler = hooks.PostCompact[0].hooks[0];
+  const startHandler = hooks.SessionStart[0].hooks[0];
+
+  const malformed = runInstalledHook(preHandler, root, "{");
+  assert.equal(malformed.status, 0, malformed.stderr);
+  assert.match(JSON.parse(malformed.stdout).systemMessage, /degraded.*continues/i);
+
+  const common = { session_id: "codex-session-a", cwd: root, model: "gpt-5.5", turn_id: "turn-1", trigger: "auto" };
+  assert.equal(runInstalledHook(preHandler, root, { ...common, hook_event_name: "PreCompact" }).status, 0);
+  assert.equal(runInstalledHook(postHandler, root, { ...common, hook_event_name: "PostCompact" }).status, 0);
+  write(join(root, "advance.txt"), "advance\n");
+  assert.equal(spawnSync("git", ["add", "advance.txt"], { cwd: root, windowsHide: true }).status, 0);
+  assert.equal(spawnSync("git", ["commit", "-m", "advance"], { cwd: root, windowsHide: true }).status, 0);
+  const drifted = runInstalledHook(startHandler, root, {
+    session_id: "codex-session-a",
+    cwd: root,
+    model: "gpt-5.5",
+    hook_event_name: "SessionStart",
+    source: "compact",
+  });
+  assert.equal(drifted.status, 0, drifted.stderr);
+  const driftedOutput = JSON.parse(drifted.stdout);
+  assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), false);
+  assert.match(driftedOutput.systemMessage, /degraded.*reconciliation failed/i);
+
+  const storageRoot = workspace(t, "uas codex storage failure-");
+  initGit(storageRoot);
+  assert.equal(runCli(setupCli, [
+    "setup", "--hosts", "codex", "--context-window", "200000", "--project", storageRoot,
+  ], { cwd: storageRoot }).status, 0);
+  const storageCli = join(storageRoot, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  assert.equal(runCli(storageCli, [
+    "activate", "--work-item", "issue-6", "--harness", "codex", "--session", "storage-session", "--project", storageRoot,
+  ], { cwd: storageRoot }).status, 0);
+  const storageHooks = json(join(storageRoot, ".codex", "hooks.json")).hooks;
+  const eventsPath = join(storageRoot, ".agents", "state", "continuity", "work-items", "issue-6", "events.jsonl");
+  mkdirSync(eventsPath);
+  const storageFailure = runInstalledHook(storageHooks.PreCompact[0].hooks[0], storageRoot, {
+    session_id: "storage-session",
+    cwd: storageRoot,
+    model: "gpt-5.5",
+    hook_event_name: "PreCompact",
+    turn_id: "turn-storage",
+    trigger: "auto",
+  });
+  assert.equal(storageFailure.status, 0, storageFailure.stderr);
+  assert.match(JSON.parse(storageFailure.stdout).systemMessage, /degraded.*continues/i);
+});
+
 test("Claude preserves an existing custom status line and reports it in the limitation", (t) => {
   const root = workspace(t);
   const { config } = ensureConfig(root);
@@ -963,11 +1244,12 @@ test("adapter status detects drift and missing reversal state fails safely", asy
   assert.equal(handler.commandWindows.includes(root), false);
   const nested = join(root, "packages", "nested");
   mkdirSync(nested, { recursive: true });
+  const hookInput = JSON.stringify({ session_id: "unbound", turn_id: "turn-1", trigger: "auto" });
   const invocation = process.platform === "win32"
-    ? spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", handler.commandWindows], { cwd: nested, input: "{}", encoding: "utf8", windowsHide: true })
-    : spawnSync("sh", ["-c", handler.command], { cwd: nested, input: "{}", encoding: "utf8" });
+    ? spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", handler.commandWindows], { cwd: nested, input: hookInput, encoding: "utf8", windowsHide: true })
+    : spawnSync("sh", ["-c", handler.command], { cwd: nested, input: hookInput, encoding: "utf8" });
   assert.equal(invocation.status, 0, invocation.stderr);
-  assert.match(invocation.stdout, /Continuity checkpoint saved/);
+  assert.match(JSON.parse(invocation.stdout).systemMessage, /No active work item/);
   unlinkSync(join(root, ".agents", "universal-agent-skills", "adapter-state.json"));
   assert.throws(
     () => installAdapters({ project: root, config, hosts: ["codex"], contextWindow: 128000 }),

@@ -18,7 +18,7 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 | Large foggy effort | wayfinder → spec → tickets → implement |
 | Visual decision | resolved prerequisites → frontend-design → frontend-build → frontend-review |
 | Logic decision | prototype → record verdict → implementation |
-| Long session boundary | activate Work Item ID → checkpoint-work → host [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction) → resume-work |
+| Long session boundary | activate Work Item ID → checkpoint-work → host [compaction](https://www.aihero.dev/ai-coding-dictionary/compaction) → automatic bound-capsule reconciliation in configured Codex, otherwise resume-work |
 | Work must travel | activate Work Item ID → checkpoint-work → handoff → resume-work |
 
 ## Common questions
@@ -30,6 +30,10 @@ The router is upstream-derived and widely recognized. Keeping the name preserves
 **Can the router force compaction?**
 
 No. It can route to checkpointing and report host capability. Actual compaction belongs to the host and its opted-in adapter.
+
+**What does the Codex adapter automate?**
+
+It records the pre/post lifecycle once, reconciles only the work item bound to that Codex session, and injects one bounded capsule after compaction. It does not invent a binding or silently select another work item.
 
 **What if two agents checkpoint the same work item?**
 

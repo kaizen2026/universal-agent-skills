@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 export const SCHEMA_VERSION = 2;
 export const CHECKPOINT_SCHEMA_VERSION = 1;
@@ -486,6 +487,7 @@ export function workItemPaths(project, config, workItemId) {
     capsule: join(root, "semantic.md"),
     lock: join(root, ".update.lock"),
     proposals: join(root, "proposals"),
+    events: join(root, "events.jsonl"),
   };
 }
 
@@ -599,6 +601,118 @@ export function saveWorkItemCapsule({
     return { ...resolved, document, revision: Number(updated.metadata.revision) };
   });
   return locked.ok ? locked.value : { ...resolved, ...locked };
+}
+
+export function processContinuityEvent({ project, config, harness, sessionId, kind, input = {}, action }) {
+  const normalizedHarness = validateHarness(harness);
+  const normalizedSession = validateIdentity("sessionId", sessionId);
+  const resolved = resolveActiveWorkItem({ project, config, harness: normalizedHarness, sessionId: normalizedSession });
+  if (!resolved.ok) return resolved;
+  const locked = withWorkItemLock(resolved.paths, WORK_ITEM_LOCK_TIMEOUT_MS, () => {
+    const capsule = readFileSync(resolved.paths.capsule, "utf8");
+    const validation = validateCapsule(capsule, resolved.workItemId);
+    if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
+    const events = readContinuityEvents(resolved.paths.events);
+    const generation = continuityGeneration(events, normalizedSession, kind, input.turn_id);
+    const idempotencyKey = continuityEventKey({
+      harness: normalizedHarness,
+      sessionId: normalizedSession,
+      kind,
+      nativeIdentity: input.turn_id || null,
+      generation,
+      trigger: input.trigger || input.source || null,
+    });
+    const existing = events.find((event) => event.idempotencyKey === idempotencyKey);
+    if (existing) return { ...resolved, duplicate: true, event: existing };
+    const outcome = action ? action({ resolved, capsule, validation, generation }) : {};
+    const { additionalContext, ...persistedOutcome } = outcome;
+    const git = gitSnapshot(project);
+    const event = JSON.parse(redactSensitive(JSON.stringify({
+      schemaVersion: 1,
+      idempotencyKey,
+      workItemId: resolved.workItemId,
+      harness: normalizedHarness,
+      sessionId: normalizedSession,
+      agentId: input.agent_id || "main",
+      kind,
+      nativeIdentity: input.turn_id || null,
+      generation,
+      observedAt: new Date().toISOString(),
+      model: input.model || null,
+      trigger: input.trigger || input.source || null,
+      context: {
+        tokens: finiteInteger(input.context_tokens),
+        capacity: finiteInteger(input.context_window_size),
+        prefixTokens: finiteInteger(input.prefix_tokens),
+      },
+      git: { head: git.head, branch: git.branch, dirty: redactSensitive(git.dirty) },
+      capsuleRevision: Number(validation.metadata.revision),
+      ...persistedOutcome,
+    })));
+    events.push(event);
+    writeTextAtomic(resolved.paths.events, `${events.map((item) => JSON.stringify(item)).join("\n")}\n`);
+    return { ...resolved, duplicate: false, event, additionalContext };
+  });
+  return locked.ok ? locked.value : { ...resolved, ...locked };
+}
+
+export function buildCapsuleInjection(document, budgetTokens) {
+  if (!Number.isInteger(budgetTokens) || budgetTokens < 1) throw new Error("capsule injection budget must be a positive integer");
+  const metadata = parseFrontmatter(document);
+  const header = `Work-Item Capsule ${metadata.workItemId || "unknown"} r${metadata.revision || "?"} (reconciled)`;
+  const entries = CAPSULE_HEADINGS.map(([, heading]) => [heading, redactSensitive(extractSection(document, heading) || "Not recorded.")]);
+  const overhead = Buffer.byteLength(`${header}\n${entries.map(([heading]) => `${heading}: `).join("\n")}`, "utf8");
+  if (overhead > budgetTokens) throw new Error("capsule injection budget is too small for required section labels");
+  let remaining = budgetTokens - overhead;
+  const lines = entries.map(([heading, value], index) => {
+    const share = Math.floor(remaining / (entries.length - index));
+    const bounded = truncateUtf8(value.replace(/\s+/g, " ").trim(), share);
+    remaining -= Buffer.byteLength(bounded, "utf8");
+    return `${heading}: ${bounded}`;
+  });
+  const text = `${header}\n${lines.join("\n")}`;
+  return { text, estimatedTokens: Buffer.byteLength(text, "utf8") };
+}
+
+function readContinuityEvents(path) {
+  if (!existsSync(path)) return [];
+  const source = readFileSync(path, "utf8").trim();
+  return source ? source.split(/\r?\n/).map((line) => JSON.parse(line)) : [];
+}
+
+function continuityGeneration(events, sessionId, kind, nativeIdentity) {
+  const sessionEvents = events.filter((event) => event.sessionId === sessionId);
+  const nativeMatch = nativeIdentity
+    ? sessionEvents.find((event) => event.kind === kind && event.nativeIdentity === nativeIdentity)
+    : null;
+  if (nativeMatch) return nativeMatch.generation;
+  if (kind === "post-compact" && nativeIdentity) {
+    const preCompact = sessionEvents.find((event) => event.kind === "pre-compact" && event.nativeIdentity === nativeIdentity);
+    if (preCompact) return preCompact.generation;
+  }
+  const maximum = sessionEvents.reduce((value, event) => Math.max(value, Number(event.generation) || 0), 0);
+  return kind === "pre-compact" ? maximum + 1 : maximum;
+}
+
+function continuityEventKey(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function finiteInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
+}
+
+function truncateUtf8(value, maximumBytes) {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
+  if (maximumBytes < 4) return "";
+  let output = "";
+  for (const character of value) {
+    if (Buffer.byteLength(`${output}${character}…`, "utf8") > maximumBytes) break;
+    output += character;
+  }
+  return `${output}…`;
 }
 
 function withWorkItemLock(paths, timeoutMs, action) {

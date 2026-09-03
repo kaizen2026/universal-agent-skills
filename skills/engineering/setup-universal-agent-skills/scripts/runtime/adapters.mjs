@@ -53,7 +53,7 @@ function signal(commandAvailable, configPresent) {
   };
 }
 
-export function installAdapters({ project, config, hosts, contextWindow, settingsPaths = {} }) {
+export function installAdapters({ project, config, hosts, contextWindow, settingsPaths = {}, codexOptions = {} }) {
   for (const host of hosts) {
     if (!HOSTS.includes(host)) throw new Error(`Unknown host: ${host}`);
   }
@@ -66,7 +66,7 @@ export function installAdapters({ project, config, hosts, contextWindow, setting
   const results = [];
   for (const host of hosts) {
     const hostState = state.hosts[host] || { createdFiles: [], configuredAt: null };
-    const result = INSTALLERS[host]({ project, config, contextWindow, state: hostState, settingsPaths });
+    const result = INSTALLERS[host]({ project, config, contextWindow, state: hostState, settingsPaths, codexOptions });
     hostState.configuredAt = new Date().toISOString();
     hostState.configured = result.configured;
     hostState.threshold = result.threshold;
@@ -149,7 +149,11 @@ function adapterConfigurationVerified(project, host, state) {
     if (host === "codex") {
       const configPath = resolveWithin(project, ".codex/config.toml");
       const hooksPath = resolveWithin(project, ".codex/hooks.json");
-      return fileContains(configPath, "# universal-agent-skills") && fileContains(hooksPath, MANAGED_FRAGMENT);
+      const source = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+      const hooks = readJson(hooksPath, {});
+      return source.includes(`model_auto_compact_token_limit = ${state.managedThreshold} # universal-agent-skills`)
+        && source.includes(`model_auto_compact_token_limit_scope = "${state.managedScope}" # universal-agent-skills`)
+        && codexHooksVerified(hooks.hooks, state.managedCodexHooks);
     }
     if (host === "claude") {
       const settings = readJson(resolveWithin(project, ".claude/settings.local.json"), {});
@@ -181,18 +185,25 @@ const CAPABILITIES = Object.freeze({
   antigravity: "CLI status-line telemetry warning plus checkpoint/handoff; IDE continuity remains manual and a new session is explicit",
 });
 
-function installCodex({ project, config, contextWindow, state }) {
-  const report = thresholdReport(config, contextWindow);
+function installCodex({ project, config, contextWindow, state, codexOptions = {} }) {
   const configPath = resolveWithin(project, ".codex/config.toml");
   const hooksPath = resolveWithin(project, ".codex/hooks.json");
+  const report = resolveCodexPolicy(project, configPath, config, contextWindow, codexOptions);
   rememberCreated(state, project, configPath);
   rememberCreated(state, project, hooksPath);
-  mergeCodexThreshold(configPath, report.effectiveTokens, state);
+  mergeCodexThreshold(configPath, report.installedTokenLimit, state);
+  mergeCodexScope(configPath, report.accountingScope, state);
   const hooks = readJson(hooksPath, { description: "Project lifecycle hooks.", hooks: {} });
   hooks.hooks ||= {};
-  upsertNested(hooks.hooks, "PreCompact", "manual|auto", commandHandler(project, "codex", "PreCompact"));
-  upsertNested(hooks.hooks, "PostCompact", "manual|auto", commandHandler(project, "codex", "PostCompact"));
-  upsertNested(hooks.hooks, "SessionStart", "startup|resume|clear|compact", commandHandler(project, "codex", "SessionStart"));
+  const managedHooks = {
+    PreCompact: { matcher: "manual|auto", handler: commandHandler(project, "codex", "PreCompact") },
+    PostCompact: { matcher: "manual|auto", handler: commandHandler(project, "codex", "PostCompact") },
+    SessionStart: { matcher: "startup|resume|clear|compact", handler: commandHandler(project, "codex", "SessionStart", config.policy.capsuleBudgetTokens) },
+  };
+  for (const [event, managed] of Object.entries(managedHooks)) {
+    upsertManagedNested(hooks.hooks, event, managed.matcher, managed.handler);
+  }
+  state.managedCodexHooks = managedHooks;
   writeJsonAtomic(hooksPath, hooks);
   return result("codex", [configPath, hooksPath], report, "Review and trust project hooks with /hooks; untrusted project config is skipped.");
 }
@@ -346,7 +357,10 @@ function installAntigravity({ project, config, contextWindow, state, settingsPat
 function removeCodex({ project, state }) {
   const configPath = resolveWithin(project, ".codex/config.toml");
   const hooksPath = resolveWithin(project, ".codex/hooks.json");
-  if (existsSync(configPath)) removeCodexThreshold(project, configPath, state);
+  if (existsSync(configPath)) {
+    removeCodexScope(project, configPath, state);
+    if (existsSync(configPath)) removeCodexThreshold(project, configPath, state);
+  }
   cleanJsonHooks(hooksPath, state, project);
   return { host: "codex", removed: true };
 }
@@ -412,51 +426,163 @@ const INSTALLERS = { codex: installCodex, claude: installClaude, cursor: install
 const REMOVERS = { codex: removeCodex, claude: removeClaude, cursor: removeCursor, copilot: removeCopilot, antigravity: removeAntigravity };
 
 function mergeCodexThreshold(path, threshold, state) {
+  mergeCodexRootSetting({
+    path,
+    state,
+    pattern: /^\s*model_auto_compact_token_limit\s*=.*$/m,
+    managedLine: `model_auto_compact_token_limit = ${threshold} # universal-agent-skills`,
+    reversalKey: "codexThreshold",
+    managedKey: "managedThreshold",
+    managedValue: threshold,
+    insertionComment: "# universal-agent-skills managed auto-compaction threshold",
+  });
+}
+
+function mergeCodexScope(path, scope, state) {
+  mergeCodexRootSetting({
+    path,
+    state,
+    pattern: /^\s*model_auto_compact_token_limit_scope\s*=.*$/m,
+    managedLine: `model_auto_compact_token_limit_scope = "${scope}" # universal-agent-skills`,
+    reversalKey: "codexScope",
+    managedKey: "managedScope",
+    managedValue: scope,
+  });
+}
+
+function mergeCodexRootSetting({ path, state, pattern, managedLine, reversalKey, managedKey, managedValue, insertionComment }) {
   let source = existsSync(path) ? readFileSync(path, "utf8") : "";
   const eol = source.includes("\r\n") ? "\r\n" : "\n";
   const firstTable = source.search(/^\s*\[/m);
   const rootEnd = firstTable < 0 ? source.length : firstTable;
   const root = source.slice(0, rootEnd);
   const rest = source.slice(rootEnd);
-  const pattern = /^\s*model_auto_compact_token_limit\s*=.*$/m;
-  const managedLine = `model_auto_compact_token_limit = ${threshold} # universal-agent-skills`;
   if (pattern.test(root)) {
     const prior = root.match(pattern)[0];
-    if (!state.codexThreshold) state.codexThreshold = { action: "replaced", previousLine: prior };
+    if (!state[reversalKey]) state[reversalKey] = { action: "replaced", previousLine: prior };
     source = root.replace(pattern, managedLine) + rest;
   } else {
-    if (!state.codexThreshold) state.codexThreshold = { action: "added" };
-    const insertion = `# universal-agent-skills managed auto-compaction threshold${eol}${managedLine}${eol}`;
-    source = `${root}${root && !root.endsWith(eol) ? eol : ""}${insertion}${rest}`;
+    if (!state[reversalKey]) state[reversalKey] = { action: "added" };
+    const comment = insertionComment ? `${insertionComment}${eol}` : "";
+    source = `${root}${root && !root.endsWith(eol) ? eol : ""}${comment}${managedLine}${eol}${rest}`;
   }
   writeTextAtomic(path, source);
-  state.managedThreshold = threshold;
+  state[managedKey] = managedValue;
+}
+
+function resolveCodexPolicy(project, path, config, contextWindow, options) {
+  const source = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const firstTable = source.search(/^\s*\[/m);
+  const root = source.slice(0, firstTable < 0 ? source.length : firstTable);
+  const configuredCapacity = Number(root.match(/^\s*model_context_window\s*=\s*(\d+)\s*(?:#.*)?$/m)?.[1]);
+  const explicitCapacity = Number(contextWindow);
+  const capacity = Number.isFinite(explicitCapacity) && explicitCapacity > 0
+    ? Math.floor(explicitCapacity)
+    : Number.isFinite(configuredCapacity) && configuredCapacity > 0
+      ? Math.floor(configuredCapacity)
+      : null;
+  if (!capacity) {
+    throw new Error("Codex context capacity is unknown. Configure model_context_window or pass --context-window before installing the Codex adapter.");
+  }
+  const report = thresholdReport(config, capacity);
+  const activeModel = root.match(/^\s*model\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/m)?.[1] || null;
+  const requestedScope = options.accountingScope || "total";
+  if (!new Set(["total", "body_after_prefix"]).has(requestedScope)) {
+    throw new Error("Codex accounting scope must be total or body_after_prefix");
+  }
+  let prefixTokens = null;
+  let prefixVerification = null;
+  let installedTokenLimit = report.effectiveTokens;
+  let scopeConfidence = "safe-default";
+  if (requestedScope === "body_after_prefix") {
+    prefixTokens = Number(options.prefixTokens);
+    if (!Number.isInteger(prefixTokens) || prefixTokens < 0) {
+      throw new Error("body_after_prefix requires a verified non-negative --codex-prefix-tokens value");
+    }
+    if (!options.prefixEvidence) throw new Error("body_after_prefix requires --codex-prefix-evidence from an observed Codex session");
+    const evidencePath = resolveWithin(project, options.prefixEvidence);
+    const evidence = readJson(evidencePath, null);
+    const observedAt = Date.parse(evidence?.observedAt);
+    if (evidence?.kind !== "codex-prefix-measurement"
+      || !String(evidence.source || "").trim()
+      || !String(evidence.model || "").trim()
+      || !Number.isFinite(observedAt)
+      || evidence.contextCapacity !== capacity
+      || evidence.prefixTokens !== prefixTokens
+      || (activeModel && evidence.model !== activeModel)) {
+      throw new Error("Codex prefix evidence must identify its source, model, capacity, prefix token count, and observation time, and must match the active configuration");
+    }
+    installedTokenLimit = report.effectiveTokens - prefixTokens;
+    if (installedTokenLimit < 1 || capacity - (prefixTokens + installedTokenLimit) < config.policy.minimumReserveTokens) {
+      throw new Error("body_after_prefix cannot preserve the configured token reserve with this prefix");
+    }
+    scopeConfidence = "evidence-verified-prefix";
+    prefixVerification = {
+      evidencePath: relative(project, evidencePath).replaceAll("\\", "/"),
+      source: String(evidence.source).trim(),
+      model: evidence.model,
+      observedAt: new Date(observedAt).toISOString(),
+    };
+  }
+  return {
+    ...report,
+    contextCapacitySource: explicitCapacity > 0 ? "setup-input" : "codex-config:model_context_window",
+    activeModel,
+    accountingScope: requestedScope,
+    scopeConfidence,
+    prefixTokens,
+    prefixVerification,
+    installedTokenLimit,
+  };
 }
 
 function removeCodexThreshold(project, path, state) {
+  removeCodexRootSetting({
+    project,
+    path,
+    state,
+    managedPattern: /^model_auto_compact_token_limit\s*=\s*\d+\s*# universal-agent-skills\s*$/m,
+    reversalKey: "codexThreshold",
+    insertionCommentPattern: /^# universal-agent-skills managed auto-compaction threshold\r?\n/m,
+  });
+}
+
+function removeCodexScope(project, path, state) {
+  removeCodexRootSetting({
+    project,
+    path,
+    state,
+    managedPattern: /^model_auto_compact_token_limit_scope\s*=\s*"(?:total|body_after_prefix)"\s*# universal-agent-skills\s*$/m,
+    reversalKey: "codexScope",
+  });
+}
+
+function removeCodexRootSetting({ project, path, state, managedPattern, reversalKey, insertionCommentPattern }) {
   let source = readFileSync(path, "utf8");
-  const managed = /^model_auto_compact_token_limit\s*=\s*\d+\s*# universal-agent-skills\s*$/m;
-  if (!managed.test(source)) return;
-  if (state.codexThreshold?.action === "replaced" && state.codexThreshold.previousLine) {
-    source = source.replace(managed, state.codexThreshold.previousLine);
+  if (!managedPattern.test(source)) return;
+  const reversal = state[reversalKey];
+  if (reversal?.action === "replaced" && reversal.previousLine) {
+    source = source.replace(managedPattern, reversal.previousLine);
   } else {
-    source = source.replace(/^# universal-agent-skills managed auto-compaction threshold\r?\n/m, "").replace(managed, "");
-    source = source.replace(/^\s*\r?\n/, "");
+    if (insertionCommentPattern) source = source.replace(insertionCommentPattern, "");
+    source = source.replace(managedPattern, "").replace(/^\s*\r?\n/, "");
   }
   if (source.trim() === "" && wasCreated(state, project, path)) unlinkSync(path);
   else writeTextAtomic(path, source);
 }
 
-function commandHandler(_project, host, event) {
+function commandHandler(_project, host, event, additionalContextLimit) {
   const posix = `root=$(git rev-parse --show-toplevel) || exit $?; node "$root/${MANAGED_FRAGMENT}" hook ${host} ${event} --project "$root"`;
   const powerShell = `$root = (git rev-parse --show-toplevel).Trim()\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n& node (Join-Path $root '${MANAGED_FRAGMENT}') hook ${host} ${event} --project $root\nexit $LASTEXITCODE`;
   const encodedPowerShell = Buffer.from(powerShell, "utf16le").toString("base64");
-  return {
+  const handler = {
     type: "command",
     command: posix,
     commandWindows: `powershell -NoProfile -NonInteractive -EncodedCommand ${encodedPowerShell}`,
     timeout: 30,
   };
+  if (additionalContextLimit) handler.additionalContextLimit = additionalContextLimit;
+  return handler;
 }
 
 function claudeHandler(event) {
@@ -481,6 +607,33 @@ function copilotCommand(event, matcher) {
   };
   if (matcher) item.matcher = matcher;
   return item;
+}
+
+function codexHooksVerified(hooks, expected) {
+  if (!hooks || !expected) return false;
+  return Object.entries(expected).every(([event, managed]) => {
+    const entries = Array.isArray(hooks[event]) ? hooks[event] : [];
+    const managedHandlers = entries.flatMap((entry) => Array.isArray(entry?.hooks)
+      ? entry.hooks.filter((handler) => JSON.stringify(handler).includes(MANAGED_FRAGMENT)).map((handler) => ({ matcher: entry.matcher, handler }))
+      : []);
+    return managedHandlers.length === 1
+      && managedHandlers[0].matcher === managed.matcher
+      && JSON.stringify(managedHandlers[0].handler) === JSON.stringify(managed.handler);
+  });
+}
+
+function upsertManagedNested(hooks, event, matcher, handler) {
+  const entries = Array.isArray(hooks[event]) ? hooks[event] : [];
+  const preserved = [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry?.hooks)) {
+      if (!JSON.stringify(entry).includes(MANAGED_FRAGMENT)) preserved.push(entry);
+      continue;
+    }
+    const userHandlers = entry.hooks.filter((candidate) => !JSON.stringify(candidate).includes(MANAGED_FRAGMENT));
+    if (userHandlers.length > 0) preserved.push({ ...entry, hooks: userHandlers });
+  }
+  hooks[event] = [...preserved, { matcher, hooks: [handler] }];
 }
 
 function upsertNested(hooks, event, matcher, handler) {

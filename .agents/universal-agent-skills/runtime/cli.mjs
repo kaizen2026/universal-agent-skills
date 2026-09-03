@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   activateWorkItem,
+  buildCapsuleInjection,
   ensureConfig,
   ensureGitignore,
   exportHandoff,
@@ -15,6 +16,7 @@ import {
   reconcileWorkItem,
   redactSensitive,
   resolveProjectPath,
+  processContinuityEvent,
   saveCheckpoint,
   saveWorkItemCapsule,
   thresholdReport,
@@ -72,6 +74,13 @@ function setup(project, args, io) {
     hosts,
     contextWindow,
     settingsPaths: { antigravity: args["antigravity-settings"], claude: args["claude-settings"] },
+    codexOptions: {
+      accountingScope: args["codex-accounting-scope"],
+      prefixTokens: args["codex-prefix-tokens"] === undefined
+        ? undefined
+        : nonNegativeIntegerArg(args["codex-prefix-tokens"], "--codex-prefix-tokens"),
+      prefixEvidence: args["codex-prefix-evidence"],
+    },
   });
   const output = {
     ok: true,
@@ -255,6 +264,15 @@ function hook(project, rawArgs, args, io) {
   const host = rawArgs[0];
   const event = rawArgs[1];
   if (!HOSTS.includes(host)) throw new Error(`Unknown hook host: ${host}`);
+  if (host === "codex") {
+    try {
+      return codexHook(project, event, parseHookInput(io.readStdin()), io);
+    } catch (error) {
+      const message = `Continuity degraded; Codex lifecycle continues. ${redactSensitive(error?.message || error)}`;
+      io.write(JSON.stringify({ systemMessage: message }));
+      return { ok: false, degraded: true, message };
+    }
+  }
   const input = safeStdinJson(io.readStdin());
   const hookProject = project;
   const { config } = ensureConfig(hookProject);
@@ -432,6 +450,81 @@ function numberArg(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
 }
 
+function codexHook(project, event, input, io) {
+  const { config } = ensureConfig(project);
+  const normalized = String(event || input.hook_event_name || "").toLowerCase();
+  const sessionId = input.session_id;
+  if (!sessionId) throw new Error("Hook input is missing session_id.");
+  let kind;
+  let transition;
+  if (normalized.includes("precompact")) {
+    if (!input.turn_id || !new Set(["manual", "auto"]).has(input.trigger)) throw new Error("PreCompact input requires turn_id and a manual or auto trigger.");
+    kind = "pre-compact";
+    transition = "checkpoint-recorded";
+  } else if (normalized.includes("postcompact")) {
+    if (!input.turn_id || !new Set(["manual", "auto"]).has(input.trigger)) throw new Error("PostCompact input requires turn_id and a manual or auto trigger.");
+    kind = "post-compact";
+    transition = "compaction-recorded";
+  } else if (normalized.includes("sessionstart")) {
+    if (input.source !== "compact") {
+      return writeCodexDiagnostic(io, `SessionStart source ${input.source || "unknown"} did not follow compaction; no capsule was injected.`);
+    }
+    kind = "session-start-compact";
+  } else {
+    io.write("{}");
+    return {};
+  }
+  const result = processContinuityEvent({
+    project,
+    config,
+    harness: "codex",
+    sessionId,
+    kind,
+    input,
+    action: kind === "session-start-compact"
+      ? () => {
+          const reconciliation = reconcileWorkItem({ project, config, harness: "codex", sessionId });
+          if (!reconciliation.ok) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
+          const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
+          return {
+            transition: "reconciled-and-injected",
+            reconciliation: "confirmed",
+            injectedTokenEstimate: injection.estimatedTokens,
+            additionalContext: injection.text,
+          };
+        }
+      : () => ({ transition, reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
+  });
+  if (!result.ok) return writeCodexDiagnostic(io, result.message || result.reason);
+  if (result.duplicate) {
+    return writeCodexDiagnostic(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
+  }
+  if (kind === "session-start-compact") {
+    const output = {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: result.additionalContext,
+      },
+    };
+    io.write(JSON.stringify(output));
+    return output;
+  }
+  return writeCodexDiagnostic(io, `${event} ${transition} for work item ${result.workItemId}.`);
+}
+
+function parseHookInput(text) {
+  if (!text || !text.trim()) return {};
+  const value = JSON.parse(text);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Hook input must be a JSON object.");
+  return value;
+}
+
+function writeCodexDiagnostic(io, message) {
+  const output = { systemMessage: redactSensitive(message || "No active work item.") };
+  io.write(JSON.stringify(output));
+  return output;
+}
+
 function nonNegativeIntegerArg(value, name) {
   return integerArgAtLeast(value, name, 0);
 }
@@ -466,7 +559,7 @@ function printHelp(io) {
   io.write(`Universal Agent Skills runtime
 
 Commands:
-  setup --hosts <list|none> [--context-window <tokens>] [--project <path>] [--claude-settings <path>] [--antigravity-settings <path>]
+  setup --hosts <list|none> [--context-window <tokens>] [--codex-accounting-scope <total|body_after_prefix>] [--codex-prefix-tokens <tokens> --codex-prefix-evidence <path>] [--project <path>] [--claude-settings <path>] [--antigravity-settings <path>]
   remove --hosts <list> [--project <path>]
   status [--project <path>]
   threshold --context-window <tokens>

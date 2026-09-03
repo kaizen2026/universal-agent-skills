@@ -78,7 +78,7 @@ It is gitignored by default. The manual runtime path activates one issue or expl
 
 The zero-dependency Node runtime and public defaults live under [`.agents/universal-agent-skills/`](./.agents/universal-agent-skills/). Its model-neutral policy checkpoints at 68% utilization, targets compaction at 78%, preserves at least 30,000 tokens, and limits capsule injection to 500 tokens. The effective compact threshold is the lower of the utilization target and the capacity remaining after the reserve. Schema-v1 configuration is migrated without dropping user-defined fields; its former literal threshold remains inactive migration evidence.
 
-Session-start hooks resolve only an explicit Work Item ID or the current session binding. An unbound session emits a concise diagnostic and injects no semantic state. Host-specific automatic checkpoint and compaction behavior is added in the dependency-ordered adapter tickets on top of this manual contract.
+Session-start hooks resolve only an explicit Work Item ID or the current session binding. An unbound session emits a concise diagnostic and injects no semantic state. The Codex adapter records idempotent `PreCompact` and `PostCompact` events, then reconciles and injects the bound capsule once on `SessionStart` after compaction. It fails open on malformed input and continuity errors.
 
 ## Capability tiers
 
@@ -86,7 +86,7 @@ A `SKILL.md` can guide checkpointing everywhere. It cannot universally force com
 
 | Host | v1 automation | Important limit |
 | --- | --- | --- |
-| Codex CLI/IDE | `model_auto_compact_token_limit` plus `PreCompact`, `PostCompact`, and `SessionStart` hooks | Project hooks run only after trust review. |
+| Codex CLI/IDE | Safe total-token threshold plus idempotent `PreCompact`, `PostCompact`, and post-compaction `SessionStart` reconciliation | Project hooks run only after trust review; prefix-excluding accounting requires a project-local observation matching the active model, capacity, and prefix count. |
 | Claude Code CLI/IDE | 155k auto-compact calculation window plus pre/post/session hooks | Claude controls actual proactive timing; the window is an upper bound, not an exact consumed-token trigger. |
 | Cursor CLI/IDE | `preCompact` checkpointing, native token telemetry, and session-start reconciliation | Cursor's threshold is not overridden. |
 | GitHub Copilot CLI/cloud | Repository `preCompact` and session-start hooks | Cloud filesystems are ephemeral; IDE agent mode does not guarantee identical hook automation. |

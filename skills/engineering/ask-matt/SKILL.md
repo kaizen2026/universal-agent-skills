@@ -28,7 +28,7 @@ The route most work travels. You have an idea and want it built.
 
 Keep steps 1–3 in **one unbroken context window** — don't compact or clear until after `/to-tickets` — so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.
 
-The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, activate the issue or explicit objective as a Work Item ID and create `/checkpoint-work` at the nearest phase boundary before using the host's compaction lifecycle. On arrival, `/resume-work` resolves the explicit Work Item ID or session binding and reconciles its capsule with the repository. When collaborators checkpoint the same work item, revision checks preserve stale contributions as merge proposals instead of overwriting newer state. A portable skill cannot force every host to compact or open a replacement session; `/setup-universal-agent-skills` reports what the current host actually supports.
+The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, activate the issue or explicit objective as a Work Item ID and create `/checkpoint-work` at the nearest phase boundary before using the host's compaction lifecycle. On arrival, `/resume-work` resolves the explicit Work Item ID or session binding and reconciles its capsule with the repository. An opted-in Codex adapter performs that reconciliation automatically after compaction and injects the bound capsule once; it does not replace semantic checkpointing at a meaningful boundary. When collaborators checkpoint the same work item, revision checks preserve stale contributions as merge proposals instead of overwriting newer state. A portable skill cannot force every host to compact or open a replacement session; `/setup-universal-agent-skills` reports what the current host actually supports.
 
 ## On-ramps
 
@@ -70,7 +70,7 @@ A **phase** is a chunk of work inside a session — the grilling, the implementa
 - **`/checkpoint-work`** — save one local, gitignored, revisioned Work-Item Capsule at a meaningful boundary; activate and bind its issue or explicit objective first. Concurrent stale contributions become merge proposals.
 - **`/handoff`** — export a redacted portable copy for a **new harness**, **new directory**, **colleague**, or side task **mid-phase**.
 - **Subagent** — send a tightly-scoped task to its own window and get a report back.
-- **Host compaction** — after checkpointing, use the host's supported compaction lifecycle. Timing and commands are host-specific.
+- **Host compaction** — after checkpointing, use the host's supported compaction lifecycle. Timing and commands are host-specific; an opted-in Codex adapter records duplicate lifecycle deliveries once and automatically reconciles the session-bound capsule after compaction.
 
 Read [PHASE-BOUNDARIES.md](PHASE-BOUNDARIES.md) for the ordered tree, the reasoning behind each branch, and why the primary-source cost makes **Continue** the one to rule out first. Make the decision **at** a boundary; mid-phase, continue or split the rest into subagents.
 
