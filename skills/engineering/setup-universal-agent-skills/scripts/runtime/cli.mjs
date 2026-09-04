@@ -16,9 +16,11 @@ import {
   reconcileCheckpoint,
   reconcileWorkItem,
   redactSensitive,
+  resolveActiveWorkItem,
   resolveProjectPath,
   recordContinuityDiagnostic,
   processContinuityEvent,
+  safeThresholdReport,
   saveCheckpoint,
   saveWorkItemCapsule,
   thresholdReport,
@@ -119,7 +121,11 @@ function status(project, args, io) {
     .map((adapter) => adapter.installedThreshold?.detectedContextWindow)
     .filter((value) => Number.isFinite(value) && value > 0))];
   const reportWindow = suppliedWindow || (storedWindows.length === 1 ? storedWindows[0] : null);
-  const thresholdValue = configResult.config ? thresholdReport(configResult.config, reportWindow) : null;
+  // status is read-only reporting: a stored or supplied window the policy cannot serve
+  // (e.g. migrated v1 state below the reserve) becomes a reported error, not a crash.
+  const safeThreshold = configResult.config ? safeThresholdReport(configResult.config, reportWindow) : { report: null, error: null };
+  const thresholdValue = safeThreshold.report;
+  const thresholdError = safeThreshold.error;
   if (thresholdValue) {
     thresholdValue.source = suppliedWindow
       ? "current explicit or detected context window"
@@ -144,6 +150,7 @@ function status(project, args, io) {
     detected: detectHosts(project),
     signals: hostSignals(project),
     threshold: thresholdValue,
+    thresholdError,
     adapters,
   };
   io.write(JSON.stringify(output, null, 2));
@@ -194,6 +201,7 @@ function checkpoint(project, args, io) {
     fields: {
       objective: stringArg(args.objective, "--objective"),
       successCriteria: stringArg(args["success-criteria"], "--success-criteria"),
+      status: stringArg(args.status, "--status"),
       phase: stringArg(args.phase, "--phase"),
       decisions: stringArg(args.decisions, "--decisions"),
       validation: joinValues(stringArg(args.completed, "--completed"), stringArg(args.validation, "--validation")),
@@ -294,6 +302,12 @@ function resume(project, args, io) {
 
 function handoff(project, args, io) {
   const { config } = loadConfig(project);
+  // Never silently fall back to the workspace-wide legacy checkpoint (#10): the operator
+  // names the source explicitly, exactly as resume does. A partial selector falls through
+  // to exportHandoff's own precise pairing error.
+  if (!args.input && !args["work-item"] && !args.harness && !args.session) {
+    throw new Error("handoff requires an explicit source: --work-item <id>, or --harness <name> --session <id>, or --input <legacy-path>.");
+  }
   const result = exportHandoff({
     project,
     config,
@@ -322,18 +336,33 @@ function hook(project, rawArgs, args, io) {
       return degradedHook(project, host, event, error, io, input);
     }
   }
-  const input = safeStdinJson(io.readStdin());
-  const hookProject = project;
-  const { config } = ensureConfig(hookProject);
+  // The generic hosts (cursor, copilot, antigravity, other) must fail open exactly like
+  // the spec hosts: a lifecycle hook crash would surface as a host-side error on every
+  // compaction, so degrade with a diagnostic instead.
+  let input = {};
+  try {
+    input = safeStdinJson(io.readStdin());
+    return legacyHostHook(project, host, event, input, args, io);
+  } catch (error) {
+    return degradedHook(project, host, event, error, io, input);
+  }
+}
+
+function legacyHostHook(project, host, event, input, args, io) {
+  const { config } = ensureConfig(project);
   const normalized = String(event || input.hook_event_name || "").toLowerCase();
   if (normalized.includes("precompact") || normalized === "precompact") {
-    const saved = saveCheckpoint({ project: hookProject, config, harness: host, event: "pre-compact", fields: { preserveClaims: true } });
+    const saved = saveCheckpoint({ project, config, harness: host, event: "pre-compact", fields: { preserveClaims: true } });
     const observedWindow = numberArg(input.context_window_size ?? input.contextWindowSize);
     const observedTokens = numberArg(input.context_tokens ?? input.contextTokens);
-    const report = thresholdReport(config, observedWindow);
-    const observation = observedWindow
+    // A host may report a window the configured policy cannot serve (e.g. a small local
+    // model below the reserve); that degrades the observation text, never the hook.
+    const { report } = safeThresholdReport(config, observedWindow);
+    const observation = observedWindow && report
       ? ` Observed ${observedTokens ?? "unknown"}/${observedWindow} tokens; policy threshold ${report.effectiveTokens}.`
-      : " The host did not report token telemetry for this event.";
+      : observedWindow
+        ? ` Observed ${observedTokens ?? "unknown"}/${observedWindow} tokens; the configured policy cannot compute a threshold for this window.`
+        : " The host did not report token telemetry for this event.";
     const message = `Continuity checkpoint saved at ${saved.path}.${observation}`;
     return writeHookOutput(host, event, message, "precompact", io);
   }
@@ -343,15 +372,20 @@ function hook(project, rawArgs, args, io) {
   if (normalized.includes("sessionstart") || normalized === "sessionstart") {
     const sessionId = input.session_id || input.sessionId || input.conversation_id || input.conversationId;
     const result = reconcileWorkItem({
-      project: hookProject,
+      project,
       config,
       workItemId: args["work-item"],
       harness: host,
       sessionId,
     });
-    const context = result.workItemId
-      ? `Work item ${result.workItemId} resolved by ${result.resolution}. Automatic capsule injection is not enabled by the manual runtime; run the resume command to reconcile it.`
-      : `Continuity state was not activated. ${result.report}`;
+    // These hosts advertise session-start reconciliation, so a resolved capsule is
+    // injected as a bounded summary (drift-flagged when reconciliation found changes)
+    // rather than a pointer to a manual command.
+    const context = result.document
+      ? buildCapsuleInjection(result.document, config.policy.capsuleBudgetTokens, { drift: !result.ok }).text
+      : result.workItemId
+        ? `Work item ${result.workItemId} is bound to this session but could not be reconciled: ${result.report}`
+        : `Continuity state was not activated. ${result.report}`;
     return writeHookOutput(host, event, context, "sessionstart", io);
   }
   io.write("{}");
@@ -406,7 +440,13 @@ function statusline(project, args, io) {
   }
 
   const { config } = ensureConfig(project);
-  const report = thresholdReport(config, contextWindow);
+  // A window the policy cannot serve degrades the status line, never crashes it — this
+  // command runs on every host status refresh.
+  const { report } = safeThresholdReport(config, contextWindow);
+  if (!report) {
+    io.write(`${label}: the configured policy cannot compute a threshold for a ${contextWindow}-token window; use /checkpoint-work at the next phase boundary`);
+    return { ok: false, reached: false };
+  }
   const reached = tokens >= report.effectiveTokens;
   const crossing = processThresholdCrossing({
     project,
@@ -434,10 +474,23 @@ function processThresholdCrossing({ project, config, harness, sessionId, reached
   let handoff = null;
 
   if (reached && !previous) {
-    const saved = saveCheckpoint({ project, config, harness, event: "threshold-warning", fields: { preserveClaims: true } });
-    checkpoint = saved.path;
     const outputPath = join(paths.root, "handoff-current.md");
-    handoff = exportHandoff({ project, config, outputPath, destination: "a fresh explicit session" }).path;
+    // With a bound Work-Item Capsule, the capsule is the authority: export IT, and don't
+    // fabricate a placeholder workspace-wide checkpoint next to it. Only an unbound
+    // session falls back to the legacy checkpoint safety net (#4/#10).
+    let bound = { ok: false };
+    try {
+      bound = resolveActiveWorkItem({ project, config, harness, sessionId });
+    } catch {
+      // An identity the binding store can't represent simply means "unbound" here.
+    }
+    if (bound.ok) {
+      handoff = exportHandoff({ project, config, outputPath, destination: "a fresh explicit session", workItemId: bound.workItemId }).path;
+    } else {
+      const saved = saveCheckpoint({ project, config, harness, event: "threshold-warning", fields: { preserveClaims: true } });
+      checkpoint = saved.path;
+      handoff = exportHandoff({ project, config, outputPath, destination: "a fresh explicit session" }).path;
+    }
   }
 
   state.sessions[key] = { reached, updatedAt: new Date().toISOString() };
@@ -559,9 +612,16 @@ function lifecycleHook(spec, project, event, input, io) {
   let kind;
   let transition;
   if (normalized.includes("precompact")) {
-    spec.validateCompactionInput(input, "PreCompact");
     kind = "pre-compact";
     transition = "checkpoint-recorded";
+    try {
+      spec.validateCompactionInput(input, "PreCompact");
+    } catch (error) {
+      // Strict payload validation must never cost the pre-compaction snapshot: keep the
+      // legacy checkpoint's provenance current first, then degrade with the diagnostic.
+      saveCheckpoint({ project, config, harness, event: kind, fields: { preserveClaims: true } });
+      throw error;
+    }
   } else if (normalized.includes("postcompact")) {
     spec.validateCompactionInput(input, "PostCompact");
     kind = "post-compact";
@@ -595,7 +655,7 @@ function lifecycleHook(spec, project, event, input, io) {
       ? () => {
           const reconciliation = reconcileWorkItem({ project, config, harness, sessionId });
           if (!reconciliation.document) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
-          const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
+          const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens, { drift: !reconciliation.ok });
           return {
             transition: "reconciled-and-injected",
             reconciliation: reconciliation.ok ? "confirmed" : "confirmed-with-drift",
@@ -689,11 +749,11 @@ Commands:
   status [--project <path>]
   threshold --context-window <tokens>
   activate --work-item <id> --harness <name> --session <id>
-  checkpoint --expected-revision <n> [--work-item <id> | --harness <name> --session <id>] [capsule fields]
+  checkpoint --expected-revision <n> [--work-item <id> | --harness <name> --session <id>] [--status <in-progress|blocked|ready-for-review|complete>] [capsule fields]
   import-legacy-checkpoint --work-item <id> --expected-revision <n> [--input <legacy-path>] [--harness <name> --session <id>]
   validate [--input <path>]
   resume [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>]
-  handoff [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>] [--output <path>] [--destination <text>]
+  handoff (--work-item <id> | --harness <name> --session <id> | --input <legacy-path>) [--output <path>] [--destination <text>]
   hook <codex|claude|cursor|copilot|antigravity> <Event> --project <path>  # reads the host's hook JSON from stdin
   telemetry --harness <name> --tokens <count> --context-window <tokens>
   statusline [--harness antigravity|claude] [--project <path>]  # reads status-line JSON from stdin

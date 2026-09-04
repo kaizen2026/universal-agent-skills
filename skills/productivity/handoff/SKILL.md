@@ -9,7 +9,7 @@ Export a portable handoff from the current work state. Use this when the receive
 
 First checkpoint the active Work-Item Capsule (`/checkpoint-work`) only if a meaningful phase boundary or consequential decision has occurred, so the export carries current state. Reconcile it against current Git status before export.
 
-Write the handoff to the user's requested path, or to a clearly named file in the operating system's temporary directory when no path is supplied. If the continuity runtime exists, prefer its `handoff` command so reconciliation and redaction use the same schema: `handoff --work-item <id>` (or the bound `--harness` and `--session`) exports the capsule; `--input <path>` exports a legacy workspace-wide checkpoint instead. Either way the file is a portable checkpoint document, so the receiver inspects it with `resume --input` and adopts it explicitly with `import-legacy-checkpoint --work-item <id> --input <file>`; nothing on arrival happens automatically.
+Write the handoff to the user's requested path, or to a clearly named file in the operating system's temporary directory when no path is supplied. If the continuity runtime exists, prefer its `handoff` command so reconciliation and redaction use the same schema: `handoff --work-item <id>` (or the bound `--harness` and `--session`) exports the capsule; `--input <path>` exports a legacy workspace-wide checkpoint instead. The source is always named explicitly — a bare `handoff` is rejected rather than silently selecting the workspace-wide file. Either way the file is a portable checkpoint document, so the receiver inspects it with `resume --input` and adopts it explicitly with `import-legacy-checkpoint --work-item <id> --input <file>`; nothing on arrival happens automatically.
 
 Include:
 

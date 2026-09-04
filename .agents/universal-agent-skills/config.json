@@ -6,6 +6,14 @@
     "minimumReserveTokens": 30000,
     "capsuleBudgetTokens": 500
   },
+  "retention": {
+    "eventDays": 30,
+    "maxEvents": 200,
+    "historyDays": 30,
+    "maxHistory": 100,
+    "diagnosticDays": 30,
+    "maxDiagnostics": 200
+  },
   "designRoot": "docs/design",
   "stateRoot": ".agents/state/continuity",
   "frontendDesignVariants": 3,

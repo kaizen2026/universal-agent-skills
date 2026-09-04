@@ -122,6 +122,8 @@ for (const directory of promotedRoots) {
 }
 
 const config = JSON.parse(read(".agents/universal-agent-skills/config.json"));
+// Must match what the runtime's own migrateConfig canonically writes (key order included),
+// or the first state-writing command "drifts" a freshly-checked-out repo.
 const expectedConfig = {
   schemaVersion: 2,
   policy: {
@@ -130,12 +132,29 @@ const expectedConfig = {
     minimumReserveTokens: 30000,
     capsuleBudgetTokens: 500,
   },
+  retention: {
+    eventDays: 30,
+    maxEvents: 200,
+    historyDays: 30,
+    maxHistory: 100,
+    diagnosticDays: 30,
+    maxDiagnostics: 200,
+  },
   designRoot: "docs/design",
   stateRoot: ".agents/state/continuity",
   frontendDesignVariants: 3,
   phaseBoundaryCheckpointing: true,
 };
 if (JSON.stringify(config) !== JSON.stringify(expectedConfig)) fail("public config defaults drifted from the v1 contract");
+
+// The skill package ships a copy of the runtime; a one-sided edit would silently ship a
+// stale runtime to installers. npm test's check-runtime enforces this too, but validate
+// must stay self-contained.
+for (const name of ["core.mjs", "adapters.mjs", "cli.mjs"]) {
+  if (read(`.agents/universal-agent-skills/runtime/${name}`) !== read(`skills/engineering/setup-universal-agent-skills/scripts/runtime/${name}`)) {
+    fail(`runtime mirror is stale: skills/engineering/setup-universal-agent-skills/scripts/runtime/${name} differs from .agents/universal-agent-skills/runtime/${name}; run node scripts/sync-runtime.mjs`);
+  }
+}
 
 const designTemplate = read("skills/engineering/frontend-design/references/DESIGN-CONTRACT.md");
 for (const heading of [

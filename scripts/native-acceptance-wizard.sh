@@ -200,7 +200,7 @@ CLAUDE_PLUGIN_FIXTURE="$FIXTURE_ROOT/acceptance-claude-plugin"
 CODEX_WORK_ITEM="codex-accept-1"
 CLAUDE_WORK_ITEM="claude-accept-1"
 CLAUDE_PLUGIN_WORK_ITEM="claude-plugin-accept-1"
-ACCEPT_WINDOW=40000   # deliberately small: compact threshold lands ~30k tokens, so 3 real
+ACCEPT_WINDOW=40000   # deliberately small: the reserve clamp installs a ~10k-token compact threshold, so 3 real
                        # compactions are reachable without six-figure token spend (#11/#12
                        # "cost-conscious acceptance profile").
 
@@ -246,7 +246,7 @@ fi
 # ── Stage 2: Codex fixture — cost-conscious runtime setup ──────────────────
 stage "Codex fixture: install the continuity runtime"
 say "Installing the Codex adapter with a small context window, so the compact"
-say "threshold lands around 30k tokens instead of requiring a huge real session."
+say "threshold lands around 10k tokens (the 30k reserve clamps it) instead of requiring a huge real session."
 step "Running setup non-interactively against $CODEX_FIXTURE ..."
 node "$SETUP_CLI" setup --hosts codex --context-window "$ACCEPT_WINDOW" --project "$CODEX_FIXTURE"
 note "Check the JSON above: adapters[0].threshold.compactTokens is the real trigger point."

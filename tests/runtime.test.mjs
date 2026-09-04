@@ -567,6 +567,11 @@ test("schema v2 requires valid policy and exactly three frontend design variants
     () => validateConfig({ ...valid, policy: { ...valid.policy, checkpointUtilization: "0.68" } }),
     /checkpointUtilization must be a number/,
   );
+  assert.throws(
+    () => validateConfig({ ...valid, retention: { ...valid.retention, maxHistory: 0 } }),
+    /retention.maxHistory must be a positive integer/,
+    "retention that would delete everything on the next prune must be rejected at load, not discovered mid-prune",
+  );
   const custom = { ...valid, stateRoot: "private/checkpoints" };
   assert.doesNotThrow(() => validateConfig(custom));
   ensureGitignore(root, custom);
@@ -1147,13 +1152,14 @@ test("a capsule handoff round-trips the capsule schema without placeholders, boi
   assert.equal(runCli(sourceCli, ["activate", "--work-item", "issue-5", "--harness", "codex", "--session", "session-one", "--project", source], { cwd: source }).status, 0);
   assert.equal(runCli(sourceCli, [
     "checkpoint", "--work-item", "issue-5", "--expected-revision", "0",
-    "--objective", "Obj", "--success-criteria", "Crit", "--next", "Run the tests.", "--project", source,
+    "--objective", "Obj", "--success-criteria", "Crit", "--next", "Run the tests.", "--status", "blocked", "--project", source,
   ], { cwd: source }).status, 0);
   const output = ".agents/state/continuity/h.md";
   assert.equal(runCli(sourceCli, ["handoff", "--work-item", "issue-5", "--output", output, "--project", source], { cwd: source }).status, 0);
   const handoff = readFileSync(join(source, output), "utf8");
   assert.match(handoff, /^validationGitHead: unavailable$/m, "a capsule with no recorded validation must not travel as validation evidence");
   assert.match(handoff, /^validationTimestamp: unavailable$/m);
+  assert.match(handoff, /^status: blocked$/m, "the handoff carries the capsule's real status, not a fabricated in-progress");
   const inspected = runCli(sourceCli, ["resume", "--input", output, "--project", source], { cwd: source });
   assert.match(inspected.stdout, /\| Validation evidence \| Unverified \|/);
 
@@ -1179,6 +1185,7 @@ test("a capsule handoff round-trips the capsule schema without placeholders, boi
   assert.match(capsule, /## Blockers\s+REAL BLOCKER\s+## Next action/);
   assert.match(capsule, /## Next action\s+Run the tests\.\s+## Authority pointers/, "the exporter's resume instructions must not be folded into the next action");
   assert.match(capsule, /## Authority pointers\s+\[README\]\(README\.md\)/);
+  assert.match(capsule, /^status: blocked$/m, "the imported status must land in the destination capsule's frontmatter");
   assert.doesNotMatch(capsule, /Not recorded\b|\*\*Success criteria\*\*|Suggested skills/);
 
   const secondHop = ".agents/state/continuity/h2.md";
@@ -1205,6 +1212,12 @@ test("handoff rejects an ambiguous source selection instead of silently exportin
   const mixed = runCli(installedCli, ["handoff", "--input", "old.md", "--work-item", "issue-4", "--output", "h.md", "--project", root], { cwd: root });
   assert.notEqual(mixed.status, 0);
   assert.match(mixed.stderr, /not both/);
+  assert.equal(existsSync(join(root, "h.md")), false);
+  // Bare handoff must never silently fall back to the workspace-wide legacy checkpoint.
+  saveCheckpoint({ project: root, config: ensureConfig(root).config, harness: "codex", event: "phase-boundary", fields: { objective: "Legacy." } });
+  const bare = runCli(installedCli, ["handoff", "--output", "h.md", "--project", root], { cwd: root });
+  assert.notEqual(bare.status, 0);
+  assert.match(bare.stderr, /requires an explicit source/);
   assert.equal(existsSync(join(root, "h.md")), false);
 });
 
@@ -1658,7 +1671,7 @@ test("installed Codex hooks continue one bound work item exactly once through co
   const common = { session_id: "codex-session-a", cwd: root, model: "gpt-5.5" };
   const pre = { ...common, hook_event_name: "PreCompact", turn_id: "turn-1", trigger: "auto" };
   const post = { ...common, hook_event_name: "PostCompact", turn_id: "turn-1", trigger: "auto" };
-  const start = { ...common, hook_event_name: "SessionStart", source: "compact", permission_mode: "default" };
+  const start = { ...common, hook_event_name: "SessionStart", source: "compact", permission_mode: "default", turn_id: "turn-1" };
 
   for (const [event, payload] of [["PreCompact", pre], ["PreCompact", pre], ["PostCompact", post], ["PostCompact", post]]) {
     const invocation = runInstalledHook(handlers[event], nested, payload);
@@ -1672,7 +1685,7 @@ test("installed Codex hooks continue one bound work item exactly once through co
   const firstOutput = JSON.parse(firstStart.stdout);
   const duplicateOutput = JSON.parse(duplicateStart.stdout);
   const context = firstOutput.hookSpecificOutput.additionalContext;
-  assert.equal(Buffer.byteLength(context, "utf8") <= 500, true);
+  assert.equal(Buffer.byteLength(context, "utf8") <= 2000, true, "budget is 500 tokens = 2000 bytes at 4 bytes per token");
   for (const label of ["Objective", "Success criteria", "Current phase", "Binding decisions", "Validation state", "Blockers", "Next action", "Authority pointers"]) {
     assert.match(context, new RegExp(`${label}:`));
   }
@@ -1747,6 +1760,7 @@ test("installed Codex hooks fail open on malformed input, reconciliation drift, 
   const driftedOutput = JSON.parse(drifted.stdout);
   assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), true, "a git HEAD advance since the last checkpoint is normal drift, not a failure: the capsule must still be injected");
   assert.match(driftedOutput.hookSpecificOutput.additionalContext, /Continue safely\./);
+  assert.match(driftedOutput.hookSpecificOutput.additionalContext, /reconciliation found drift/i, "the injection header must warn the resuming agent to verify saved claims");
   const driftedEventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-6", "events.jsonl");
   assert.equal(readJsonLines(driftedEventsPath).at(-1).reconciliation, "confirmed-with-drift");
 
@@ -1801,7 +1815,7 @@ test("installed Claude hooks continue one bound work item exactly once through c
   const common = { session_id: "claude-session-a", model: "claude-5", permission_mode: "default" };
   const pre = { ...common, hook_event_name: "PreCompact", turn_id: "turn-1", trigger: "auto" };
   const post = { ...common, hook_event_name: "PostCompact", turn_id: "turn-1", trigger: "auto" };
-  const start = { ...common, hook_event_name: "SessionStart", source: "compact" };
+  const start = { ...common, hook_event_name: "SessionStart", source: "compact", uuid: "compact-1" };
 
   for (const [event, payload] of [["PreCompact", pre], ["PreCompact", pre], ["PostCompact", post], ["PostCompact", post]]) {
     const invocation = runCli(installedCli, ["hook", "claude", event, "--project", root], { cwd: root, stdin: JSON.stringify(payload) });
@@ -1815,7 +1829,7 @@ test("installed Claude hooks continue one bound work item exactly once through c
   const firstOutput = JSON.parse(firstStart.stdout);
   const duplicateOutput = JSON.parse(duplicateStart.stdout);
   const context = firstOutput.hookSpecificOutput.additionalContext;
-  assert.equal(Buffer.byteLength(context, "utf8") <= 500, true);
+  assert.equal(Buffer.byteLength(context, "utf8") <= 2000, true, "budget is 500 tokens = 2000 bytes at 4 bytes per token");
   for (const label of ["Objective", "Success criteria", "Current phase", "Binding decisions", "Validation state", "Blockers", "Next action", "Authority pointers"]) {
     assert.match(context, new RegExp(`${label}:`));
   }
@@ -1879,6 +1893,7 @@ test("installed Claude hooks fail open on malformed input and storage errors, an
   const driftedOutput = JSON.parse(drifted.stdout);
   assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), true, "a git HEAD advance since the last checkpoint is normal drift, not a failure: the capsule must still be injected");
   assert.match(driftedOutput.hookSpecificOutput.additionalContext, /Continue safely\./);
+  assert.match(driftedOutput.hookSpecificOutput.additionalContext, /reconciliation found drift/i, "the injection header must warn the resuming agent to verify saved claims");
   const driftedEventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-7", "events.jsonl");
   assert.equal(readJsonLines(driftedEventsPath).at(-1).reconciliation, "confirmed-with-drift");
 
@@ -2044,6 +2059,145 @@ test("Cursor hook consumes native telemetry and keeps state at the configured pr
   assert.match(output.user_message, /policy threshold 98000/);
   assert.equal(existsSync(join(root, ".agents", "state", "continuity", "current.md")), true);
   assert.equal(existsSync(join(nested, ".agents")), false);
+});
+
+test("a compaction whose pre-compact was lost still injects the capsule instead of deduplicating", async (t) => {
+  const root = workspace(t, "uas-lost-precompact-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  activateWorkItem({ project: root, config, workItemId: "issue-7", harness: "claude", sessionId: "claude-session-a" });
+  const payload = JSON.stringify({ session_id: "claude-session-a", hook_event_name: "SessionStart", source: "compact" });
+  const first = captureIo(payload);
+  await main(["hook", "claude", "SessionStart", "--project", root], first.io);
+  const second = captureIo(payload);
+  await main(["hook", "claude", "SessionStart", "--project", root], second.io);
+  assert.equal(Object.hasOwn(JSON.parse(first.writes.at(-1)), "hookSpecificOutput"), true);
+  assert.equal(Object.hasOwn(JSON.parse(second.writes.at(-1)), "hookSpecificOutput"), true, "a second real compaction with no identity and no recorded pre-compact is a new boundary, not a redelivery");
+  const events = readJsonLines(join(root, ".agents", "state", "continuity", "work-items", "issue-7", "events.jsonl"));
+  assert.deepEqual(events.map((event) => [event.kind, Number(event.generation)]), [["session-start-compact", 0], ["session-start-compact", 1]]);
+});
+
+test("small-model windows degrade lifecycle telemetry instead of crashing the hook or status line", async (t) => {
+  const root = workspace(t, "uas-small-window-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+
+  const hookCapture = captureIo(JSON.stringify({ context_tokens: 20000, context_window_size: 30000 }));
+  await main(["hook", "cursor", "preCompact", "--project", root], hookCapture.io);
+  assert.equal(hookCapture.exitCode, 0);
+  const hookOutput = JSON.parse(hookCapture.writes.at(-1));
+  assert.match(hookOutput.user_message, /Continuity checkpoint saved/);
+  assert.match(hookOutput.user_message, /cannot compute a threshold/);
+
+  const lineCapture = captureIo(JSON.stringify({
+    conversation_id: "small-session",
+    context_window: { context_window_size: 30000, used_percentage: 80 },
+  }));
+  const line = await main(["statusline", "--project", root], lineCapture.io);
+  assert.equal(line.ok, false);
+  assert.match(lineCapture.writes.at(-1), /cannot compute a threshold/);
+
+  const statusCapture = captureIo();
+  const status = await main(["status", "--project", root, "--context-window", "20000"], statusCapture.io);
+  assert.equal(status.ok, true, "status is read-only reporting and must not crash on a window the policy cannot serve");
+  assert.equal(status.threshold, null);
+  assert.match(String(status.thresholdError), /minimumReserveTokens/);
+});
+
+test("a threshold crossing with a bound work item exports the capsule and skips the placeholder legacy checkpoint", async (t) => {
+  const root = workspace(t, "uas-bound-crossing-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  activateWorkItem({ project: root, config, workItemId: "issue-4", harness: "claude", sessionId: "bound-session" });
+  saveWorkItemCapsule({
+    project: root, config, workItemId: "issue-4", harness: "claude", sessionId: "bound-session",
+    expectedRevision: 0, fields: { objective: "BOUND_CAPSULE_OBJECTIVE", next: "Continue." },
+  });
+
+  const capture = captureIo();
+  const result = await main([
+    "telemetry", "--harness", "claude", "--session", "bound-session",
+    "--tokens", "120000", "--context-window", "128000", "--project", root,
+  ], capture.io);
+  assert.equal(result.newlyCrossed, true);
+  assert.equal(result.checkpoint, null, "no placeholder workspace-wide checkpoint may be fabricated next to a bound capsule");
+  assert.equal(existsSync(join(root, ".agents", "state", "continuity", "current.md")), false);
+  const handoffDocument = readFileSync(result.handoff, "utf8");
+  assert.match(handoffDocument, /^sourceWorkItemId: issue-4$/m);
+  assert.match(handoffDocument, /BOUND_CAPSULE_OBJECTIVE/);
+
+  const unboundRoot = workspace(t, "uas-unbound-crossing-");
+  initGit(unboundRoot);
+  ensureConfig(unboundRoot);
+  const unboundCapture = captureIo();
+  const unbound = await main([
+    "telemetry", "--harness", "claude", "--session", "nobody",
+    "--tokens", "120000", "--context-window", "128000", "--project", unboundRoot,
+  ], unboundCapture.io);
+  assert.equal(unbound.newlyCrossed, true);
+  assert.notEqual(unbound.checkpoint, null, "an unbound session keeps the legacy checkpoint safety net");
+});
+
+test("generic host session starts inject the bound capsule summary they advertise", async (t) => {
+  const root = workspace(t, "uas-cursor-inject-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  activateWorkItem({ project: root, config, workItemId: "issue-4", harness: "cursor", sessionId: "cursor-session" });
+  saveWorkItemCapsule({
+    project: root, config, workItemId: "issue-4", harness: "cursor", sessionId: "cursor-session",
+    expectedRevision: 0, fields: { objective: "CURSOR_CAPSULE_OBJECTIVE", next: "Continue." },
+  });
+  const capture = captureIo(JSON.stringify({ session_id: "cursor-session" }));
+  await main(["hook", "cursor", "sessionStart", "--project", root], capture.io);
+  const output = JSON.parse(capture.writes.at(-1));
+  assert.match(output.additional_context, /Work-Item Capsule issue-4/);
+  assert.match(output.additional_context, /CURSOR_CAPSULE_OBJECTIVE/);
+
+  const unboundCapture = captureIo(JSON.stringify({ session_id: "someone-else" }));
+  await main(["hook", "cursor", "sessionStart", "--project", root], unboundCapture.io);
+  assert.match(JSON.parse(unboundCapture.writes.at(-1)).additional_context, /not activated/i);
+});
+
+test("Codex PreCompact keeps the pre-compaction snapshot even when strict payload validation fails", async (t) => {
+  const root = workspace(t, "uas-codex-strict-archival-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  const saved = saveCheckpoint({
+    project: root, config, harness: "codex", event: "phase-boundary",
+    fields: { objective: "Keep this snapshot current." },
+  });
+  const before = parseFrontmatter(saved.document);
+  const capture = captureIo(JSON.stringify({ session_id: "codex-session-a", hook_event_name: "PreCompact", trigger: "bogus" }));
+  await main(["hook", "codex", "PreCompact", "--project", root], capture.io);
+  assert.match(JSON.parse(capture.writes.at(-1)).systemMessage, /degraded.*continues/i);
+  const after = parseFrontmatter(readFileSync(join(root, config.stateRoot, "current.md"), "utf8"));
+  assert.equal(after.timestamp, before.timestamp);
+  assert.equal(after.lastObservedEvent, "pre-compact", "a malformed payload must not cost the pre-compaction archival");
+});
+
+test("checkpoint rejects a status outside the enum instead of recording it", (t) => {
+  const root = workspace(t, "uas-status-enum-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  const rejected = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-10", "--expected-revision", "0", "--status", "bogus", "--project", root,
+  ], { cwd: root });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /status must be one of/);
+  const accepted = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-10", "--expected-revision", "0", "--status", "blocked", "--project", root,
+  ], { cwd: root });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-10", "semantic.md"), "utf8");
+  assert.match(capsule, /^status: blocked$/m);
 });
 
 test("Antigravity status-line telemetry checkpoints and exports once per threshold crossing", async (t) => {

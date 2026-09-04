@@ -133,7 +133,7 @@ export function thresholdReport(config, contextWindow) {
   if (verified) {
     if (!Number.isInteger(detected)) throw new Error("contextWindow must be a positive integer");
     if (detected <= config.policy.minimumReserveTokens) {
-      throw new Error("contextWindow must exceed policy.minimumReserveTokens");
+      throw new Error(`contextWindow (${detected}) must exceed policy.minimumReserveTokens (${config.policy.minimumReserveTokens}); for a smaller model, lower minimumReserveTokens in .agents/universal-agent-skills/config.json first`);
     }
     compactTokens = Math.min(
       Math.floor(detected * config.policy.compactUtilization),
@@ -144,7 +144,7 @@ export function thresholdReport(config, contextWindow) {
     // strictly under it rather than treating that as a policy-configuration failure.
     checkpointTokens = Math.min(Math.floor(detected * config.policy.checkpointUtilization), compactTokens - 1);
     if (checkpointTokens < 1) {
-      throw new Error("contextWindow is too small to support the configured checkpoint/compact/reserve policy");
+      throw new Error("contextWindow is too small to support the configured checkpoint/compact/reserve policy; lower policy.minimumReserveTokens in .agents/universal-agent-skills/config.json for smaller models");
     }
     reserveTokens = detected - compactTokens;
   }
@@ -159,6 +159,17 @@ export function thresholdReport(config, contextWindow) {
     effectiveTokens: compactTokens,
     effectivePercent: verified ? Math.floor((compactTokens / detected) * 100) : null,
   };
+}
+
+// Fail-open variant for lifecycle paths (hooks, status lines, read-only status): a host
+// reporting a window the policy cannot serve must degrade the telemetry, never crash the
+// host's event. Explicit operator commands (setup, threshold, telemetry) stay loud.
+export function safeThresholdReport(config, contextWindow) {
+  try {
+    return { report: thresholdReport(config, contextWindow), error: null };
+  } catch (error) {
+    return { report: null, error: error?.message || String(error) };
+  }
 }
 
 export function loadConfig(project) {
@@ -185,6 +196,7 @@ export function validateConfig(config) {
     throw new Error(`Unsupported config schemaVersion: ${config.schemaVersion}`);
   }
   validatePolicy(config.policy);
+  validateRetention(config.retention);
   if (config.frontendDesignVariants !== 3) {
     throw new Error(`frontendDesignVariants must be exactly 3 in schema version ${SCHEMA_VERSION}`);
   }
@@ -614,6 +626,9 @@ export function saveWorkItemCapsule({
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
     throw new Error("expectedRevision must be a non-negative integer");
   }
+  if (fields.status && !ALLOWED_STATUSES.has(fields.status)) {
+    throw new Error(`status must be one of: ${[...ALLOWED_STATUSES].join(", ")}`);
+  }
   const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
   if (!resolved.ok) return resolved;
   const locked = withWorkItemLock(resolved.paths, lockTimeoutMs, () => {
@@ -637,6 +652,7 @@ export function saveWorkItemCapsule({
         ...resolved,
         ok: false,
         reason: "stale-revision",
+        message: `Expected revision ${expectedRevision} but the capsule is at revision ${currentRevision}; the update was preserved as a merge proposal instead of overwriting newer state.`,
         baseRevision: expectedRevision,
         currentRevision,
         proposal,
@@ -743,14 +759,23 @@ export function recordContinuityDiagnostic({ project, config, harness, sessionId
   return locked.ok ? { ok: true, ...locked.value } : locked;
 }
 
-export function buildCapsuleInjection(document, budgetTokens) {
+// The policy budget is expressed in tokens; the truncation machinery works in UTF-8
+// bytes. Four bytes per token is the standard conservative approximation for English
+// prose — precise enough for a budget cap, and the estimate is labelled as approximate.
+const APPROX_BYTES_PER_TOKEN = 4;
+
+export function buildCapsuleInjection(document, budgetTokens, { drift = false } = {}) {
   if (!Number.isInteger(budgetTokens) || budgetTokens < 1) throw new Error("capsule injection budget must be a positive integer");
+  const budgetBytes = budgetTokens * APPROX_BYTES_PER_TOKEN;
   const metadata = parseFrontmatter(document);
-  const header = `Work-Item Capsule ${metadata.workItemId || "unknown"} r${metadata.revision || "?"} (reconciled)`;
+  const status = drift
+    ? "(reconciliation found drift — verify these saved claims against the repository before acting)"
+    : "(reconciled)";
+  const header = `Work-Item Capsule ${metadata.workItemId || "unknown"} r${metadata.revision || "?"} ${status}`;
   const entries = CAPSULE_HEADINGS.map(([, heading]) => [heading, redactSensitive(extractSection(document, heading) || "Not recorded.")]);
   const overhead = Buffer.byteLength(`${header}\n${entries.map(([heading]) => `${heading}: `).join("\n")}`, "utf8");
-  if (overhead > budgetTokens) throw new Error("capsule injection budget is too small for required section labels");
-  let remaining = budgetTokens - overhead;
+  if (overhead > budgetBytes) throw new Error("capsule injection budget is too small for required section labels");
+  let remaining = budgetBytes - overhead;
   const lines = entries.map(([heading, value], index) => {
     const share = Math.floor(remaining / (entries.length - index));
     const bounded = truncateUtf8(value.replace(/\s+/g, " ").trim(), share);
@@ -758,7 +783,7 @@ export function buildCapsuleInjection(document, budgetTokens) {
     return `${heading}: ${bounded}`;
   });
   const text = `${header}\n${lines.join("\n")}`;
-  return { text, estimatedTokens: Buffer.byteLength(text, "utf8") };
+  return { text, estimatedTokens: Math.ceil(Buffer.byteLength(text, "utf8") / APPROX_BYTES_PER_TOKEN) };
 }
 
 function readContinuityEvents(path, retention = DEFAULT_RETENTION) {
@@ -809,7 +834,19 @@ function continuityGeneration(events, sessionId, kind, nativeIdentity) {
     if (preCompact) return preCompact.generation;
   }
   const maximum = sessionEvents.reduce((value, event) => Math.max(value, Number(event.generation) || 0), 0);
-  return kind === "pre-compact" ? maximum + 1 : maximum;
+  if (kind === "pre-compact") return maximum + 1;
+  // A session-start-compact with no native identity cannot be tied to a specific delivery.
+  // If the current generation already recorded its injection, this is a NEW compaction
+  // boundary — typically one whose pre-compact degraded and recorded no event — not a
+  // redelivery. Missing a real injection defeats the whole feature, while re-injecting on
+  // a (rare, host-retry) identical redelivery costs at most one capsule budget, so the
+  // ambiguity resolves toward injecting. Deliveries that do carry a native identity are
+  // still deduplicated exactly by the nativeMatch above.
+  if (kind === "session-start-compact"
+    && sessionEvents.some((event) => event.kind === "session-start-compact" && Number(event.generation) === maximum)) {
+    return maximum + 1;
+  }
+  return maximum;
 }
 
 function continuityEventKey(value) {
@@ -900,6 +937,7 @@ function saveMergeProposal({ paths, workItemId, baseRevision, currentRevision, h
     currentRevision,
     createdAt: new Date().toISOString(),
     provenance: { harness, sessionId },
+    status: ALLOWED_STATUSES.has(fields.status) ? fields.status : null,
     fields: bounded.fields,
     truncated: bounded.truncated,
   };
@@ -960,12 +998,14 @@ export function reconcileWorkItem({ project, config, workItemId, harness, sessio
 function buildCapsule({ project, workItemId, revision, harness, sessionId, fields, existing }) {
   const git = gitSnapshot(project);
   const prior = existing || "";
+  const previousStatus = prior ? parseFrontmatter(prior).status : "";
+  const status = fields.status || (ALLOWED_STATUSES.has(previousStatus) ? previousStatus : "in-progress");
   const body = CAPSULE_HEADINGS.map(([field, heading]) => {
     const previous = prior ? extractSection(prior, heading) : "";
     const fallback = field === "next" ? CAPSULE_NEXT_PLACEHOLDER : CAPSULE_PLACEHOLDER;
     return `## ${heading}\n\n${redactSensitive(fields[field] || previous || fallback)}`;
   }).join("\n\n");
-  return `---\nschemaVersion: ${CAPSULE_SCHEMA_VERSION}\nworkItemId: ${workItemId}\nrevision: ${revision}\nupdatedAt: ${new Date().toISOString()}\nupdatedByHarness: ${safeScalar(harness)}\nupdatedBySession: ${safeScalar(sessionId)}\ngitHead: ${safeScalar(git.head)}\n---\n\n# Work-Item Capsule\n\n${body}\n`;
+  return `---\nschemaVersion: ${CAPSULE_SCHEMA_VERSION}\nworkItemId: ${workItemId}\nrevision: ${revision}\nstatus: ${safeScalar(status)}\nupdatedAt: ${new Date().toISOString()}\nupdatedByHarness: ${safeScalar(harness)}\nupdatedBySession: ${safeScalar(sessionId)}\ngitHead: ${safeScalar(git.head)}\n---\n\n# Work-Item Capsule\n\n${body}\n`;
 }
 
 export function validateCapsule(document, expectedWorkItemId) {
@@ -979,6 +1019,10 @@ export function validateCapsule(document, expectedWorkItemId) {
   }
   if (expectedWorkItemId && metadata.workItemId !== expectedWorkItemId) errors.push("workItemId does not match its storage path");
   if (!Number.isInteger(Number(metadata.revision)) || Number(metadata.revision) < 0) errors.push("revision must be a non-negative integer");
+  // status is optional (capsules written before it existed default to in-progress), but
+  // when present it must be one of the checkpoint enum values so it can round-trip
+  // through a portable handoff.
+  if (metadata.status && !ALLOWED_STATUSES.has(metadata.status)) errors.push(`unsupported status: ${metadata.status}`);
   if (!isIsoUtc(metadata.updatedAt)) errors.push("updatedAt must be ISO-8601 UTC");
   for (const key of ["updatedByHarness", "updatedBySession", "gitHead"]) {
     if (!metadata[key]) errors.push(`missing frontmatter field: ${key}`);
@@ -1163,6 +1207,7 @@ export function importLegacyCheckpointIntoCapsule({
   const fields = {
     objective: objective || undefined,
     successCriteria: successCriteria || undefined,
+    status: ALLOWED_STATUSES.has(metadata.status) ? metadata.status : undefined,
     phase: read("Current phase and completion status") || undefined,
     decisions: [provenance, existingDecisions, read("Decisions and rejected alternatives")]
       .filter(Boolean)
@@ -1322,7 +1367,7 @@ ${HANDOFF_RESUME_INSTRUCTIONS} (\`resume --input <this file>\`). To continue it 
     workItemId: reconciliation.workItemId,
     revision: reconciliation.revision,
     originatingHarness: metadata.updatedByHarness,
-    status: "in-progress",
+    status: ALLOWED_STATUSES.has(metadata.status) ? metadata.status : "in-progress",
     gitHead: metadata.gitHead,
     // A capsule with no recorded validation must not travel as validation evidence for HEAD.
     validationGitHead: validation ? metadata.gitHead : "unavailable",
