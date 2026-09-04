@@ -29,6 +29,7 @@ import {
   redactSensitive,
   saveCheckpoint,
   saveWorkItemCapsule,
+  importLegacyCheckpointIntoCapsule,
   thresholdReport,
   validateConfig,
   validateCheckpoint,
@@ -892,6 +893,156 @@ test("Codex PreCompact without a session_id still preserves legacy checkpoint pr
   assert.match(JSON.parse(preCompact.writes.at(-1)).systemMessage, /No active work item/i);
 });
 
+test("importLegacyCheckpointIntoCapsule refuses to run without an explicit workItemId", (t) => {
+  const root = workspace(t, "uas-import-no-work-item-");
+  const { config } = ensureConfig(root);
+  assert.throws(
+    () => importLegacyCheckpointIntoCapsule({ project: root, config, workItemId: undefined, expectedRevision: 0 }),
+    /requires an explicit workItemId/,
+  );
+});
+
+test("import-legacy-checkpoint maps a legacy checkpoint into a freshly activated capsule and tags it with import provenance", (t) => {
+  const root = workspace(t, "uas-import-legacy-checkpoint-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  saveCheckpoint({
+    project: root,
+    config: ensureConfig(root).config,
+    harness: "codex",
+    event: "phase-boundary",
+    fields: {
+      objective: "Ship the legacy-checkpoint importer.",
+      phase: "Implementation",
+      decisions: "Use a merge proposal for a stale target capsule.",
+      completed: "node --test: exit 0",
+      risks: "None known.",
+      next: "Add compatibility tests.",
+      pointers: "docs/continuity-release-runbook.md",
+    },
+  });
+
+  const rejected = runCli(installedCli, ["import-legacy-checkpoint", "--expected-revision", "0", "--project", root], { cwd: root });
+  assert.notEqual(rejected.status, 0, rejected.stdout);
+  assert.match(rejected.stderr, /requires an explicit --work-item/);
+
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const imported = runCli(installedCli, [
+    "import-legacy-checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--project", root,
+  ], { cwd: root });
+  assert.equal(imported.status, 0, imported.stderr);
+  assert.equal(JSON.parse(imported.stdout).revision, 1);
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-10", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 1$/m);
+  assert.match(capsule, /## Objective\s+Ship the legacy-checkpoint importer\./);
+  assert.match(capsule, /## Current phase\s+Implementation/);
+  assert.match(capsule, /## Validation state\s+node --test: exit 0/);
+  assert.match(capsule, /## Next action\s+Add compatibility tests\./);
+  assert.match(capsule, /## Authority pointers\s+docs\/continuity-release-runbook\.md/);
+  assert.match(capsule, /Imported \d{4}-\d{2}-\d{2}T.*from legacy checkpoint .*current\.md/);
+  assert.match(capsule, /Use a merge proposal for a stale target capsule\./);
+});
+
+test("import-legacy-checkpoint appends provenance to existing binding decisions instead of discarding them", (t) => {
+  const root = workspace(t, "uas-import-preserves-decisions-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  saveCheckpoint({
+    project: root,
+    config: ensureConfig(root).config,
+    harness: "codex",
+    event: "phase-boundary",
+    fields: { objective: "Updated objective from the legacy checkpoint." },
+  });
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--objective", "Original objective.",
+    "--decisions", "PRE_EXISTING_DECISION must survive the import.", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const imported = runCli(installedCli, [
+    "import-legacy-checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "1", "--project", root,
+  ], { cwd: root });
+  assert.equal(imported.status, 0, imported.stderr);
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-10", "semantic.md"), "utf8");
+  assert.match(capsule, /## Objective\s+Updated objective from the legacy checkpoint\./);
+  assert.match(capsule, /PRE_EXISTING_DECISION must survive the import\./, "the legacy checkpoint had no decisions of its own; the capsule's existing decisions must not be discarded");
+  assert.match(capsule, /Imported \d{4}-\d{2}-\d{2}T.*from legacy checkpoint/);
+});
+
+test("import-legacy-checkpoint becomes a merge proposal instead of overwriting a capsule with newer real work", (t) => {
+  const root = workspace(t, "uas-import-stale-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  saveCheckpoint({
+    project: root,
+    config: ensureConfig(root).config,
+    harness: "codex",
+    event: "phase-boundary",
+    fields: { objective: "Legacy content that must never silently replace real work.", next: "N/A" },
+  });
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--objective", "Real, newer work already in the capsule.", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const stale = runCli(installedCli, [
+    "import-legacy-checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--project", root,
+  ], { cwd: root });
+  assert.equal(stale.status, 2, stale.stdout);
+  const output = JSON.parse(stale.stdout);
+  assert.equal(output.ok, false);
+  assert.equal(output.reason, "stale-revision");
+  assert.match(readFileSync(output.proposal.path, "utf8"), /Legacy content that must never silently replace real work\./);
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-10", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 1$/m);
+  assert.match(capsule, /## Objective\s+Real, newer work already in the capsule\./);
+  assert.doesNotMatch(capsule, /Legacy content that must never silently replace real work\./);
+});
+
+test("no automatic hook selects a workspace-wide legacy checkpoint even when a bound work item exists", async (t) => {
+  const root = workspace(t, "uas-no-auto-legacy-select-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  saveCheckpoint({
+    project: root,
+    config,
+    harness: "codex",
+    event: "phase-boundary",
+    fields: { objective: "LEGACY_WORKSPACE_CHECKPOINT_MARKER must never be auto-injected.", next: "N/A" },
+  });
+  const installedCli = installFixtureRuntime(root);
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-10", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--objective", "CAPSULE_MARKER is the real bound work item content.", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const start = captureIo(JSON.stringify({ session_id: "session-a", turn_id: "turn-1", trigger: "auto", source: "compact" }));
+  await main(["hook", "codex", "SessionStart", "--project", root], start.io);
+  const context = JSON.parse(start.writes.at(-1)).hookSpecificOutput.additionalContext;
+  assert.match(context, /CAPSULE_MARKER/);
+  assert.doesNotMatch(context, /LEGACY_WORKSPACE_CHECKPOINT_MARKER/);
+});
+
 test("checkpoint schema rejects stale timestamps, unsupported enums, and heading reordering", (t) => {
   const root = workspace(t);
   const { config } = ensureConfig(root);
@@ -1113,6 +1264,25 @@ test("a Codex adapter state saved before managedScope/managedCodexHooks existed 
   write(statePath, JSON.stringify(state));
 
   assert.equal(adapterStatus(root).find((item) => item.host === "codex").status, "Configured");
+});
+
+test("status reports exact remediation guidance for a non-managed hook handler without touching it", (t) => {
+  const root = workspace(t, "uas-unmanaged-hook-");
+  const { config } = ensureConfig(root);
+  installAdapters({ project: root, config, hosts: ["codex"], contextWindow: 128000 });
+
+  const hooksPath = join(root, ".codex", "hooks.json");
+  const hooks = json(hooksPath);
+  hooks.hooks.PreCompact.push({ matcher: "", hooks: [{ type: "command", command: "some-other-tool --checkpoint" }] });
+  write(hooksPath, JSON.stringify(hooks));
+
+  const status = adapterStatus(root).find((item) => item.host === "codex");
+  assert.equal(status.status, "Configured", "an unmanaged foreign handler must not itself count as configuration drift");
+  assert.equal(status.duplicateOwnership.unmanaged.PreCompact, 1);
+  assert.match(status.duplicateOwnership.remediation, /Non-managed hook handler\(s\) found in \.codex\/hooks\.json for PreCompact \(1\)/);
+  assert.match(status.duplicateOwnership.remediation, /remove them from that file by hand/);
+
+  assert.equal(json(hooksPath).hooks.PreCompact.some((entry) => entry.hooks.some((h) => h.command === "some-other-tool --checkpoint")), true, "the foreign handler itself must be left untouched");
 });
 
 test("installed Codex adapter resolves configured capacity and reports safe total accounting", (t) => {

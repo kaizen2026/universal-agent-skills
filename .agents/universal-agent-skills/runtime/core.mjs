@@ -1080,6 +1080,67 @@ function extractSection(document, heading) {
   return match ? match[1].trim() : "";
 }
 
+// The only path that turns a legacy workspace-wide checkpoint into Work-Item Capsule
+// content. It always requires an explicit workItemId (never auto-selected), always tags
+// the result with import provenance, and goes through saveWorkItemCapsule's own
+// expectedRevision/merge-proposal machinery rather than overwriting capsule content
+// directly, so a stale import against a capsule with newer real work becomes a proposal
+// like any other conflicting update.
+export function importLegacyCheckpointIntoCapsule({
+  project,
+  config,
+  workItemId,
+  harness,
+  sessionId,
+  inputPath,
+  expectedRevision,
+  lockTimeoutMs,
+}) {
+  if (!workItemId) {
+    throw new Error("Legacy checkpoint import requires an explicit workItemId; it is never selected automatically.");
+  }
+  const paths = checkpointPaths(project, config);
+  const path = inputPath ? resolveProjectPath(project, inputPath) : paths.current;
+  if (!existsSync(path)) {
+    throw new Error(`No legacy checkpoint found at ${path}`);
+  }
+  const document = redactSensitive(readFileSync(path, "utf8"));
+  const metadata = parseFrontmatter(document);
+  const relativePath = relative(project, path).replaceAll("\\", "/");
+  const provenance = `Imported ${new Date().toISOString()} from legacy checkpoint ${relativePath} `
+    + `(originating event: ${metadata.event || "unknown"}, harness: ${metadata.originatingHarness || "unknown"}, `
+    + `recorded: ${metadata.timestamp || "unknown"}).`;
+  // The provenance note is unconditional, which would otherwise make `decisions` always
+  // truthy and defeat saveWorkItemCapsule's "keep the previous section" fallback for every
+  // import. Read whatever binding decisions the target capsule already has (if any) so the
+  // note is appended to them instead of silently replacing them.
+  const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
+  const existingDecisions = resolved.ok && existsSync(resolved.paths.capsule)
+    ? extractSection(readFileSync(resolved.paths.capsule, "utf8"), "Binding decisions")
+    : "";
+  const objective = extractSection(document, "Objective and success criteria");
+  const suggestedSkills = extractSection(document, "Suggested skills and resume instructions");
+  const next = [extractSection(document, "Next action"), suggestedSkills && `Suggested skills/resume instructions: ${suggestedSkills}`]
+    .filter(Boolean)
+    .join("\n\n");
+  const fields = {
+    // The legacy checkpoint bundles objective and success criteria into one section with no
+    // way to split them; only populate objective from it and leave successCriteria alone
+    // (falls back to whatever the capsule already has) rather than duplicating the same text
+    // under both headings.
+    objective: objective || undefined,
+    phase: extractSection(document, "Current phase and completion status") || undefined,
+    decisions: [provenance, existingDecisions, extractSection(document, "Decisions and rejected alternatives")]
+      .filter(Boolean)
+      .join("\n\n"),
+    validation: extractSection(document, "Completed work and validation") || undefined,
+    blockers: extractSection(document, "Remaining risks and blockers") || undefined,
+    next: next || undefined,
+    pointers: extractSection(document, "Pointers") || undefined,
+  };
+  return saveWorkItemCapsule({ project, config, workItemId, harness, sessionId, expectedRevision, lockTimeoutMs, fields });
+}
+
 function normalizeWhitespace(value) {
   return String(value).replace(/\s+/g, " ").trim();
 }

@@ -9,6 +9,7 @@ import {
   ensureGitignore,
   exportHandoff,
   checkpointPaths,
+  importLegacyCheckpointIntoCapsule,
   installRuntime,
   loadConfig,
   readJson,
@@ -42,6 +43,7 @@ export async function main(argv = process.argv.slice(2), io = defaultIo()) {
     if (command === "threshold") return threshold(project, args, io);
     if (command === "activate") return activate(project, args, io);
     if (command === "checkpoint") return checkpoint(project, args, io);
+    if (command === "import-legacy-checkpoint") return importLegacyCheckpoint(project, args, io);
     if (command === "validate") return validate(project, args, io);
     if (command === "resume") return resume(project, args, io);
     if (command === "handoff") return handoff(project, args, io);
@@ -200,6 +202,10 @@ function checkpoint(project, args, io) {
       pointers: stringArg(args.pointers, "--pointers"),
     },
   });
+  return writeSaveWorkItemResult(workItem, io);
+}
+
+function writeSaveWorkItemResult(workItem, io) {
   if (!workItem.ok) {
     if (workItem.reason === "stale-revision" || workItem.reason === "lock-unavailable") {
       const output = {
@@ -229,6 +235,27 @@ function checkpoint(project, args, io) {
   };
   io.write(JSON.stringify(output, null, 2));
   return output;
+}
+
+function importLegacyCheckpoint(project, args, io) {
+  const { config } = ensureConfig(project);
+  ensureGitignore(project, config);
+  if (!args["work-item"]) {
+    throw new Error("import-legacy-checkpoint requires an explicit --work-item; a legacy checkpoint is never imported automatically.");
+  }
+  const workItem = importLegacyCheckpointIntoCapsule({
+    project,
+    config,
+    workItemId: args["work-item"],
+    harness: args.harness,
+    sessionId: args.session,
+    inputPath: args.input,
+    expectedRevision: nonNegativeIntegerArg(args["expected-revision"], "--expected-revision"),
+    lockTimeoutMs: args["lock-timeout-ms"] === undefined
+      ? undefined
+      : positiveIntegerArg(args["lock-timeout-ms"], "--lock-timeout-ms"),
+  });
+  return writeSaveWorkItemResult(workItem, io);
 }
 
 function validate(project, args, io) {

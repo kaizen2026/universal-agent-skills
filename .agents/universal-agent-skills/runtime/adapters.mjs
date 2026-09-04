@@ -751,33 +751,38 @@ function result(host, paths, threshold, limitation, configured = true) {
   };
 }
 
+const HOOK_DIAGNOSTIC_PATHS = Object.freeze({
+  codex: ".codex/hooks.json",
+  claude: ".claude/settings.local.json",
+});
+
 function managedHookDiagnostics(project, host) {
-  const counts = {};
+  const relativePath = HOOK_DIAGNOSTIC_PATHS[host];
+  const empty = { owner: "universal-agent-skills", counts: {}, duplicate: false, confidence: "unverified", unmanaged: {}, remediation: null };
+  if (!relativePath) return empty;
   try {
-    if (host === "codex") {
-      const hooks = readJson(resolveWithin(project, ".codex/hooks.json"), {}).hooks || {};
-      for (const [event, entries] of Object.entries(hooks)) {
-        counts[event] = (Array.isArray(entries) ? entries : []).reduce(
-          (total, entry) => total + (Array.isArray(entry?.hooks) ? entry.hooks.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length : 0),
-          0,
-        );
-      }
-    } else if (host === "claude") {
-      const hooks = readJson(resolveWithin(project, ".claude/settings.local.json"), {}).hooks || {};
-      for (const [event, entries] of Object.entries(hooks)) {
-        counts[event] = (Array.isArray(entries) ? entries : []).reduce(
-          (total, entry) => total + (Array.isArray(entry?.hooks) ? entry.hooks.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length : 0),
-          0,
-        );
-      }
+    const hooks = readJson(resolveWithin(project, relativePath), {}).hooks || {};
+    const counts = {};
+    const unmanaged = {};
+    for (const [event, entries] of Object.entries(hooks)) {
+      const handlers = (Array.isArray(entries) ? entries : []).flatMap((entry) => (Array.isArray(entry?.hooks) ? entry.hooks : []));
+      counts[event] = handlers.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length;
+      const foreignCount = handlers.length - counts[event];
+      if (foreignCount > 0) unmanaged[event] = foreignCount;
     }
+    const unmanagedEvents = Object.keys(unmanaged);
+    return {
+      owner: "universal-agent-skills",
+      counts,
+      duplicate: Object.values(counts).some((count) => count > 1),
+      confidence: Object.keys(counts).length > 0 ? "verified" : "unverified",
+      unmanaged,
+      remediation: unmanagedEvents.length === 0
+        ? null
+        : `Non-managed hook handler(s) found in ${relativePath} for ${unmanagedEvents.map((event) => `${event} (${unmanaged[event]})`).join(", ")}. `
+          + "Universal Agent Skills leaves these untouched; remove them from that file by hand if they are unwanted.",
+    };
   } catch {
-    return { owner: "universal-agent-skills", duplicate: false, counts, confidence: "unverified" };
+    return empty;
   }
-  return {
-    owner: "universal-agent-skills",
-    counts,
-    duplicate: Object.values(counts).some((count) => count > 1),
-    confidence: Object.keys(counts).length > 0 ? "verified" : "unverified",
-  };
 }
