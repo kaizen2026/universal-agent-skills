@@ -87,7 +87,7 @@ A `SKILL.md` can guide checkpointing everywhere. It cannot universally force com
 | Host | v1 automation | Important limit |
 | --- | --- | --- |
 | Codex CLI/IDE | Safe total-token threshold plus idempotent `PreCompact`, `PostCompact`, and post-compaction `SessionStart` reconciliation | Project hooks run only after trust review; prefix-excluding accounting requires a project-local observation matching the active model, capacity, and prefix count. |
-| Claude Code CLI/IDE | 155k auto-compact calculation window plus pre/post/session hooks | Claude controls actual proactive timing; the window is an upper bound, not an exact consumed-token trigger. |
+| Claude Code CLI/IDE | Reported model context window plus a host-controlled compact-trigger percentage (never inventing a fallback capacity), and idempotent `PreCompact`, `PostCompact`, and post-compaction `SessionStart` reconciliation | Claude controls actual proactive timing; the window is unverified until a real session reports it, and is an upper bound, not an exact consumed-token trigger. |
 | Cursor CLI/IDE | `preCompact` checkpointing, native token telemetry, and session-start reconciliation | Cursor's threshold is not overridden. |
 | GitHub Copilot CLI/cloud | Repository `preCompact` and session-start hooks | Cloud filesystems are ephemeral; IDE agent mode does not guarantee identical hook automation. |
 | Antigravity CLI | Status-line token telemetry warning plus checkpoint/handoff command | Compaction and starting a replacement session remain explicit. |

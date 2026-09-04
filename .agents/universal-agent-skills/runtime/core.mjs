@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmdirSync,
   statSync,
@@ -17,15 +18,27 @@ import { createHash } from "node:crypto";
 export const SCHEMA_VERSION = 2;
 export const CHECKPOINT_SCHEMA_VERSION = 1;
 export const CAPSULE_SCHEMA_VERSION = 1;
+// Compatibility marker for external delegating wrappers (e.g. the claude-agent-skills
+// session-durability plugin) to check before spawning/importing this runtime.
+export const HOOK_CONTRACT = "continuity-v2";
 export const DEFAULT_POLICY = Object.freeze({
   checkpointUtilization: 0.68,
   compactUtilization: 0.78,
   minimumReserveTokens: 30000,
   capsuleBudgetTokens: 500,
 });
+export const DEFAULT_RETENTION = Object.freeze({
+  eventDays: 30,
+  maxEvents: 200,
+  historyDays: 30,
+  maxHistory: 100,
+  diagnosticDays: 30,
+  maxDiagnostics: 200,
+});
 export const DEFAULT_CONFIG = Object.freeze({
   schemaVersion: SCHEMA_VERSION,
   policy: DEFAULT_POLICY,
+  retention: DEFAULT_RETENTION,
   designRoot: "docs/design",
   stateRoot: ".agents/state/continuity",
   frontendDesignVariants: 3,
@@ -84,6 +97,7 @@ export function writeJsonAtomic(path, value) {
 
 export function thresholdReport(config, contextWindow) {
   validatePolicy(config.policy);
+  validateRetention(config.retention);
   const detected = Number(contextWindow);
   const verified = Number.isFinite(detected) && detected > 0;
   let checkpointTokens = null;
@@ -94,13 +108,16 @@ export function thresholdReport(config, contextWindow) {
     if (detected <= config.policy.minimumReserveTokens) {
       throw new Error("contextWindow must exceed policy.minimumReserveTokens");
     }
-    checkpointTokens = Math.floor(detected * config.policy.checkpointUtilization);
     compactTokens = Math.min(
       Math.floor(detected * config.policy.compactUtilization),
       detected - config.policy.minimumReserveTokens,
     );
-    if (checkpointTokens >= compactTokens) {
-      throw new Error("effective checkpoint threshold must be lower than the compact threshold");
+    // The reserve clamp above can pull compactTokens below the raw checkpointUtilization
+    // target on a small-but-otherwise-valid contextWindow; clamp checkpointTokens to stay
+    // strictly under it rather than treating that as a policy-configuration failure.
+    checkpointTokens = Math.min(Math.floor(detected * config.policy.checkpointUtilization), compactTokens - 1);
+    if (checkpointTokens < 1) {
+      throw new Error("contextWindow is too small to support the configured checkpoint/compact/reserve policy");
     }
     reserveTokens = detected - compactTokens;
   }
@@ -165,7 +182,19 @@ function migrateConfig(existing) {
     ...existing,
     schemaVersion: SCHEMA_VERSION,
     policy: { ...DEFAULT_POLICY, ...(existing.policy || {}) },
+    retention: { ...DEFAULT_RETENTION, ...(existing.retention || {}) },
   };
+}
+
+function validateRetention(retention) {
+  if (!retention || typeof retention !== "object" || Array.isArray(retention)) {
+    throw new Error("retention must be an object");
+  }
+  for (const key of Object.keys(DEFAULT_RETENTION)) {
+    if (!Number.isInteger(retention[key]) || retention[key] <= 0) {
+      throw new Error(`retention.${key} must be a positive integer`);
+    }
+  }
 }
 
 function validatePolicy(policy) {
@@ -612,7 +641,7 @@ export function processContinuityEvent({ project, config, harness, sessionId, ki
     const capsule = readFileSync(resolved.paths.capsule, "utf8");
     const validation = validateCapsule(capsule, resolved.workItemId);
     if (!validation.valid) throw new Error(`Work-Item Capsule validation failed: ${validation.errors.join("; ")}`);
-    const events = readContinuityEvents(resolved.paths.events);
+    const events = readContinuityEvents(resolved.paths.events, config.retention);
     const generation = continuityGeneration(events, normalizedSession, kind, input.turn_id);
     const idempotencyKey = continuityEventKey({
       harness: normalizedHarness,
@@ -650,10 +679,41 @@ export function processContinuityEvent({ project, config, harness, sessionId, ki
       ...persistedOutcome,
     })));
     events.push(event);
-    writeTextAtomic(resolved.paths.events, `${events.map((item) => JSON.stringify(item)).join("\n")}\n`);
+    const retainedEvents = retainRecords(events, config.retention.eventDays, config.retention.maxEvents, "observedAt");
+    writeTextAtomic(resolved.paths.events, `${retainedEvents.map((item) => JSON.stringify(item)).join("\n")}\n`);
     return { ...resolved, duplicate: false, event, additionalContext };
   });
   return locked.ok ? locked.value : { ...resolved, ...locked };
+}
+
+export function recordContinuityDiagnostic({ project, config, harness, sessionId, event, message, input = {} }) {
+  const paths = checkpointPaths(project, config);
+  const diagnosticPath = join(paths.root, "diagnostics.jsonl");
+  const lockPaths = { root: paths.root, lock: join(paths.root, ".diagnostics.lock") };
+  const locked = withWorkItemLock(lockPaths, WORK_ITEM_LOCK_TIMEOUT_MS, () => {
+    const existing = existsSync(diagnosticPath)
+      ? readFileSync(diagnosticPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    const diagnostic = JSON.parse(redactSensitive(JSON.stringify({
+      schemaVersion: 1,
+      degraded: true,
+      harness: String(harness || "other"),
+      sessionId: sessionId || null,
+      event: event || null,
+      nativeIdentity: input.turn_id || input.event_id || input.uuid || null,
+      observedAt: new Date().toISOString(),
+      message: String(message || "Continuity degraded."),
+    })));
+    const retained = retainRecords(
+      [...existing, diagnostic],
+      config.retention.diagnosticDays,
+      config.retention.maxDiagnostics,
+      "observedAt",
+    );
+    writeTextAtomic(diagnosticPath, `${retained.map((item) => JSON.stringify(item)).join("\n")}\n`);
+    return { path: diagnosticPath, diagnostic };
+  });
+  return locked.ok ? { ok: true, ...locked.value } : locked;
 }
 
 export function buildCapsuleInjection(document, budgetTokens) {
@@ -674,10 +734,41 @@ export function buildCapsuleInjection(document, budgetTokens) {
   return { text, estimatedTokens: Buffer.byteLength(text, "utf8") };
 }
 
-function readContinuityEvents(path) {
+function readContinuityEvents(path, retention = DEFAULT_RETENTION) {
   if (!existsSync(path)) return [];
   const source = readFileSync(path, "utf8").trim();
-  return source ? source.split(/\r?\n/).map((line) => JSON.parse(line)) : [];
+  return source
+    ? retainRecords(source.split(/\r?\n/).map((line) => JSON.parse(line)), retention.eventDays, retention.maxEvents, "observedAt")
+    : [];
+}
+
+function retainRecords(records, days, maximum, timestampKey) {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  return records
+    .filter((record) => {
+      const timestamp = Date.parse(record?.[timestampKey] || record?.createdAt || "");
+      return !Number.isFinite(timestamp) || timestamp >= cutoff;
+    })
+    .slice(-maximum);
+}
+
+function pruneDirectory(path, days, maximum) {
+  if (!existsSync(path)) return;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const files = readdirSync(path)
+    .map((name) => {
+      const file = join(path, name);
+      try {
+        return { file, mtime: statSync(file).mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.mtime - left.mtime);
+  for (const [index, item] of files.entries()) {
+    if (item.mtime < cutoff || index >= maximum) unlinkSync(item.file);
+  }
 }
 
 function continuityGeneration(events, sessionId, kind, nativeIdentity) {
@@ -790,6 +881,8 @@ function saveMergeProposal({ paths, workItemId, baseRevision, currentRevision, h
   let suffix = 1;
   while (existsSync(path)) path = join(paths.proposals, `${stamp}-${process.pid}-${suffix++}.json`);
   writeTextAtomic(path, `${redactSensitive(JSON.stringify(proposal, null, 2))}\n`);
+  // Proposals need an explicit human decision (there is no automated "resolved" marker),
+  // so retention never deletes one automatically — see #8's "unresolved proposals" acceptance criterion.
   return { path, truncated: proposal.truncated };
 }
 
@@ -908,6 +1001,7 @@ export function saveCheckpoint({ project, config, harness, event, fields = {} })
   const validation = validateCheckpoint(document);
   if (!validation.valid) throw new Error(`Checkpoint validation failed: ${validation.errors.join("; ")}`);
   writeTextAtomic(paths.current, document);
+  pruneDirectory(paths.history, config.retention.historyDays, config.retention.maxHistory);
   return { path: paths.current, document, validation };
 }
 

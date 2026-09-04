@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -16,13 +17,19 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 
 import {
+  activateWorkItem,
   ensureConfig,
   ensureGitignore,
   exportHandoff,
+  HOOK_CONTRACT,
   parseFrontmatter,
+  processContinuityEvent,
   reconcileCheckpoint,
+  recordContinuityDiagnostic,
   redactSensitive,
   saveCheckpoint,
+  saveWorkItemCapsule,
+  thresholdReport,
   validateConfig,
   validateCheckpoint,
 } from "../.agents/universal-agent-skills/runtime/core.mjs";
@@ -31,7 +38,7 @@ import {
   installAdapters,
   removeAdapters,
 } from "../.agents/universal-agent-skills/runtime/adapters.mjs";
-import { main } from "../.agents/universal-agent-skills/runtime/cli.mjs";
+import { HOOK_CONTRACT as cliHookContract, main } from "../.agents/universal-agent-skills/runtime/cli.mjs";
 
 const repository = join(dirname(fileURLToPath(import.meta.url)), "..");
 const setupCli = join(repository, "skills", "engineering", "setup-universal-agent-skills", "scripts", "universal-agent-skills.mjs");
@@ -128,6 +135,21 @@ function installFixtureRuntime(root, contextWindow = 200000) {
   const setup = runCli(setupCli, ["setup", "--hosts", "none", "--context-window", String(contextWindow), "--project", root], { cwd: root });
   assert.equal(setup.status, 0, setup.stderr);
   return join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+}
+
+function snapshotTree(root) {
+  const entries = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (name === ".git") continue;
+      const full = join(dir, name);
+      const info = statSync(full);
+      if (info.isDirectory()) walk(full);
+      else entries.push(`${full.slice(root.length)}:${info.mtimeMs}:${info.size}`);
+    }
+  };
+  walk(root);
+  return entries.sort();
 }
 
 test("installed CLI migrates schema-v1 configuration and resolves utilization policy", (t) => {
@@ -276,6 +298,29 @@ test("installed CLI activates, checkpoints, and resumes one session-bound work i
   ], { cwd: root });
   assert.equal(stale.status, 2, stale.stderr);
   assert.match(stale.stdout, /\| Git HEAD \| Changed \|/);
+});
+
+test("checkpoint rejects a valueless CLI flag instead of writing the literal word \"true\" into a capsule field", (t) => {
+  const root = workspace(t, "uas-checkpoint-valueless-flag-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-9", "--harness", "codex", "--session", "session-one", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const rejected = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-9", "--harness", "codex", "--session", "session-one",
+    "--expected-revision", "0", "--objective", "Implement issue #9.",
+    "--project", root,
+    "--blockers",
+  ], { cwd: root });
+  assert.notEqual(rejected.status, 0, rejected.stdout);
+  assert.match(rejected.stderr, /--blockers requires a text value/);
+
+  const capsulePath = join(root, ".agents", "state", "continuity", "work-items", "issue-9", "semantic.md");
+  const capsule = readFileSync(capsulePath, "utf8");
+  assert.match(capsule, /^revision: 0$/m, "a rejected checkpoint must not advance the capsule revision");
+  assert.doesNotMatch(capsule, /## Blockers\s+true/, "a rejected checkpoint must not write the literal word \"true\" into a capsule field");
 });
 
 test("installed CLI accepts an explicit work item without a session binding", (t) => {
@@ -527,6 +572,28 @@ test("schema v2 requires valid policy and exactly three frontend design variants
   assert.match(readFileSync(join(root, ".gitignore"), "utf8"), /private\/checkpoints\//);
 });
 
+test("thresholdReport never throws for a valid context window, even where the reserve clamp would otherwise invert checkpoint and compact", (t) => {
+  const root = workspace(t, "uas-threshold-small-window-");
+  const { config } = ensureConfig(root);
+  for (const contextWindow of [31000, 40000, 50000, 75000, 93750, 128000, 200000, 1000000]) {
+    const report = thresholdReport(config, contextWindow);
+    assert.equal(report.checkpointTokens < report.compactTokens, true, `checkpoint must stay below compact at ${contextWindow}`);
+    assert.equal(report.checkpointTokens >= 1, true, `checkpoint must be a positive count at ${contextWindow}`);
+    assert.equal(report.reserveTokens >= config.policy.minimumReserveTokens, true, `reserve must hold at ${contextWindow}`);
+  }
+  assert.equal(thresholdReport(config, 128000).checkpointTokens, 87040, "the common large-window case is unchanged");
+  assert.equal(thresholdReport(config, 200000).checkpointTokens, 136000, "the common large-window case is unchanged");
+  assert.throws(
+    () => thresholdReport(config, 30001 - 1),
+    /must exceed policy.minimumReserveTokens/,
+  );
+  assert.throws(
+    () => thresholdReport(config, 30001),
+    /too small to support the configured checkpoint\/compact\/reserve policy/,
+    "a window with almost no headroom above the reserve must fail clearly rather than silently returning a degenerate threshold",
+  );
+});
+
 test("redaction removes tokens, credentials, email, URL auth, and private keys", () => {
   const source = [
     "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
@@ -561,6 +628,109 @@ test("redaction removes tokens, credentials, email, URL auth, and private keys",
   }
   assert.match(redacted, /REDACTED_TOKEN/);
   assert.match(redacted, /REDACTED_PRIVATE_KEY/);
+});
+
+test("cli.mjs re-exports the runtime's HOOK_CONTRACT for external delegating wrappers", () => {
+  assert.equal(typeof HOOK_CONTRACT, "string");
+  assert.equal(HOOK_CONTRACT.length > 0, true);
+  assert.equal(cliHookContract, HOOK_CONTRACT);
+});
+
+test("retention prunes bounded event and diagnostic history without touching the current capsule or merge proposals", (t) => {
+  const root = workspace(t, "uas-retention-");
+  initGit(root);
+  const { config: baseConfig } = ensureConfig(root);
+  ensureGitignore(root, baseConfig);
+  const config = {
+    ...baseConfig,
+    retention: { ...baseConfig.retention, maxEvents: 3, eventDays: 3650, maxDiagnostics: 3, diagnosticDays: 3650 },
+  };
+  activateWorkItem({ project: root, config, workItemId: "issue-8", harness: "claude", sessionId: "session-a" });
+
+  for (let index = 0; index < 6; index += 1) {
+    processContinuityEvent({
+      project: root,
+      config,
+      harness: "claude",
+      sessionId: "session-a",
+      kind: "pre-compact",
+      input: { turn_id: `turn-${index}`, trigger: "auto" },
+      action: () => ({ transition: "checkpoint-recorded", reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
+    });
+  }
+  const eventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-8", "events.jsonl");
+  const events = readJsonLines(eventsPath);
+  assert.equal(events.length, 3);
+  assert.equal(events.at(-1).nativeIdentity, "turn-5");
+
+  for (let index = 0; index < 6; index += 1) {
+    recordContinuityDiagnostic({ project: root, config, harness: "claude", sessionId: "session-a", event: "PreCompact", message: `Degraded ${index}.` });
+  }
+  const diagnosticsPath = join(root, ".agents", "state", "continuity", "diagnostics.jsonl");
+  const diagnostics = readJsonLines(diagnosticsPath);
+  assert.equal(diagnostics.length, 3);
+  assert.equal(diagnostics.at(-1).message, "Degraded 5.");
+
+  for (let index = 0; index < 6; index += 1) {
+    saveWorkItemCapsule({
+      project: root, config, workItemId: "issue-8", harness: "claude", sessionId: "session-a",
+      expectedRevision: 999, fields: { objective: `Stale ${index}.` },
+    });
+  }
+  const proposalsDir = join(root, ".agents", "state", "continuity", "work-items", "issue-8", "proposals");
+  assert.equal(readdirSync(proposalsDir).length, 6, "merge proposals require an explicit human decision and are never auto-pruned");
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-8", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 0$/m, "pruning must never touch the current capsule");
+});
+
+test("status commands never mutate local continuity state", (t) => {
+  const root = workspace(t, "uas-status-readonly-");
+  initGit(root);
+  const setup = runCli(setupCli, ["setup", "--hosts", "codex", "--context-window", "128000", "--project", root], { cwd: root });
+  assert.equal(setup.status, 0, setup.stderr);
+  const installedCli = join(root, ".agents", "universal-agent-skills", "runtime", "cli.mjs");
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-8", "--harness", "codex", "--session", "session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-8", "--harness", "codex", "--session", "session-a",
+    "--expected-revision", "0", "--objective", "Prove status is read-only.", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const before = snapshotTree(root);
+  const first = runCli(installedCli, ["status", "--project", root], { cwd: root });
+  assert.equal(first.status, 0, first.stderr);
+  const second = runCli(installedCli, ["status", "--context-window", "128000", "--project", root], { cwd: root });
+  assert.equal(second.status, 0, second.stderr);
+  const after = snapshotTree(root);
+  assert.deepEqual(after, before);
+  assert.doesNotThrow(() => JSON.parse(first.stdout));
+});
+
+test("identity validation rejects path traversal and malformed work-item, harness, and session identifiers", (t) => {
+  const root = workspace(t, "uas-identity-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+
+  for (const workItemId of ["../../escape", "..", "a/../../b", "a\\..\\b", "/etc/passwd"]) {
+    const attempt = runCli(installedCli, [
+      "activate", "--work-item", workItemId, "--harness", "claude", "--session", "session-a", "--project", root,
+    ], { cwd: root });
+    assert.notEqual(attempt.status, 0, `expected rejection for work-item ${JSON.stringify(workItemId)}`);
+  }
+  assert.equal(existsSync(join(root, "..", "escape")), false);
+  assert.equal(existsSync(join(dirname(root), "escape")), false);
+  assert.equal(existsSync("/etc/passwd.agents"), false);
+
+  const stateRoot = join(root, ".agents", "state", "continuity", "work-items");
+  assert.equal(existsSync(stateRoot) && readdirSync(stateRoot).length > 0, false);
+
+  const legitimate = runCli(installedCli, [
+    "activate", "--work-item", "issue-8", "--harness", "claude", "--session", "session-a", "--project", root,
+  ], { cwd: root });
+  assert.equal(legitimate.status, 0, legitimate.stderr);
+  assert.deepEqual(readdirSync(stateRoot), ["issue-8"]);
 });
 
 test("checkpoint refresh archives the prior version and updates supplied sections", (t) => {
@@ -688,6 +858,38 @@ test("legacy lifecycle observations preserve provenance without reactivation", a
   assert.match(injected.hookSpecificOutput.additionalContext, /was not activated/i);
   assert.match(injected.hookSpecificOutput.additionalContext, /No active work item/i);
   assert.doesNotMatch(injected.hookSpecificOutput.additionalContext, /Keep the validation claim/);
+});
+
+test("Codex PreCompact without a session_id still preserves legacy checkpoint provenance", async (t) => {
+  const root = workspace(t, "uas-codex-legacy-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  const saved = saveCheckpoint({
+    project: root,
+    config,
+    harness: "codex",
+    event: "phase-boundary",
+    fields: {
+      objective: "Keep the validation claim tied to its source commit.",
+      completed: "`node --test`: exit 0",
+      next: "Advance the repository.",
+    },
+  });
+  const before = parseFrontmatter(saved.document);
+  write(join(root, "advance.txt"), "advanced\n");
+  assert.equal(spawnSync("git", ["add", ".gitignore", "advance.txt"], { cwd: root, windowsHide: true }).status, 0);
+  assert.equal(spawnSync("git", ["commit", "-m", "advance"], { cwd: root, windowsHide: true }).status, 0);
+
+  const preCompact = captureIo(JSON.stringify({ turn_id: "turn-1", trigger: "auto" }));
+  await main(["hook", "codex", "PreCompact", "--project", root], preCompact.io);
+  const afterDocument = readFileSync(join(root, config.stateRoot, "current.md"), "utf8");
+  const after = parseFrontmatter(afterDocument);
+  assert.equal(after.timestamp, before.timestamp);
+  assert.equal(after.gitHead, before.gitHead);
+  assert.equal(after.validationGitHead, before.validationGitHead);
+  assert.equal(after.lastObservedEvent, "pre-compact");
+  assert.match(JSON.parse(preCompact.writes.at(-1)).systemMessage, /No active work item/i);
 });
 
 test("checkpoint schema rejects stale timestamps, unsupported enums, and heading reordering", (t) => {
@@ -858,6 +1060,61 @@ test("adapters merge, repeat without duplicates, and restore related prior value
   assert.equal(existsSync(join(root, ".agents", "universal-agent-skills", "adapters", "antigravity.json")), false);
 });
 
+test("re-running Claude setup without a context window restores the prior environment instead of leaving stale managed values", (t) => {
+  const root = workspace(t, "uas-claude-window-cleanup-");
+  const { config } = ensureConfig(root);
+  write(join(root, ".claude", "settings.local.json"), JSON.stringify({
+    env: { OTHER: "kept", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "777777", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "60" },
+  }));
+
+  installAdapters({ project: root, config, hosts: ["claude"], contextWindow: 128000 });
+  const managed = json(join(root, ".claude", "settings.local.json"));
+  assert.equal(managed.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "128000");
+  assert.equal(managed.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, "75");
+
+  installAdapters({ project: root, config, hosts: ["claude"], contextWindow: null });
+  const cleaned = json(join(root, ".claude", "settings.local.json"));
+  assert.equal(cleaned.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "777777", "stale managed window must not survive a re-setup with no detected context window");
+  assert.equal(cleaned.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, "60", "stale managed percent override must not survive a re-setup with no detected context window");
+  assert.equal(cleaned.env.OTHER, "kept");
+
+  const status = adapterStatus(root).find((item) => item.host === "claude");
+  assert.equal(status.thresholdSource, "unverified");
+});
+
+test("status reports a verified threshold source for Cursor, Copilot, and Antigravity when a context window was supplied", (t) => {
+  const root = workspace(t, "uas-non-claude-threshold-source-");
+  const { config } = ensureConfig(root);
+  const antigravitySettings = join(root, "antigravity-settings.json");
+  installAdapters({
+    project: root,
+    config,
+    hosts: ["cursor", "copilot", "antigravity"],
+    contextWindow: 128000,
+    settingsPaths: { antigravity: antigravitySettings },
+  });
+  const status = adapterStatus(root);
+  for (const host of ["cursor", "copilot", "antigravity"]) {
+    const entry = status.find((item) => item.host === host);
+    assert.equal(entry.thresholdSource, "setup-input", `${host} threshold source must reflect the supplied context window`);
+  }
+});
+
+test("a Codex adapter state saved before managedScope/managedCodexHooks existed is still reported as configured", (t) => {
+  const root = workspace(t, "uas-codex-legacy-state-");
+  const { config } = ensureConfig(root);
+  installAdapters({ project: root, config, hosts: ["codex"], contextWindow: 128000 });
+  assert.equal(adapterStatus(root).find((item) => item.host === "codex").status, "Configured");
+
+  const statePath = join(root, ".agents", "universal-agent-skills", "adapter-state.json");
+  const state = json(statePath);
+  delete state.hosts.codex.managedScope;
+  delete state.hosts.codex.managedCodexHooks;
+  write(statePath, JSON.stringify(state));
+
+  assert.equal(adapterStatus(root).find((item) => item.host === "codex").status, "Configured");
+});
+
 test("installed Codex adapter resolves configured capacity and reports safe total accounting", (t) => {
   const root = workspace(t, "uas codex policy path with spaces-");
   initGit(root);
@@ -973,6 +1230,28 @@ test("installed Codex adapter enables body-after-prefix accounting only with ver
   assert.equal(rejected.status, 1);
   assert.match(rejected.stderr, /requires --codex-prefix-evidence/);
   assert.equal(readFileSync(unsafeConfig, "utf8"), before);
+
+  const noModelRoot = workspace(t, "uas-codex-unknown-model-prefix-");
+  initGit(noModelRoot);
+  const noModelConfig = join(noModelRoot, ".codex", "config.toml");
+  write(noModelConfig, "model_context_window = 200000\n");
+  const noModelEvidencePath = join(noModelRoot, ".agents", "codex-prefix-evidence.json");
+  write(noModelEvidencePath, JSON.stringify({
+    kind: "codex-prefix-measurement",
+    source: "observed active Codex session",
+    model: "some-other-model",
+    contextCapacity: 200000,
+    prefixTokens: 20000,
+    observedAt: "2026-09-03T00:00:00.000Z",
+  }));
+  const beforeNoModel = readFileSync(noModelConfig, "utf8");
+  const rejectedUnknownModel = runCli(setupCli, [
+    "setup", "--hosts", "codex", "--codex-accounting-scope", "body_after_prefix",
+    "--codex-prefix-tokens", "20000", "--codex-prefix-evidence", noModelEvidencePath, "--project", noModelRoot,
+  ], { cwd: noModelRoot });
+  assert.equal(rejectedUnknownModel.status, 1, "prefix evidence must never be accepted when the active model cannot be verified from config.toml");
+  assert.match(rejectedUnknownModel.stderr, /must match the active configuration/);
+  assert.equal(readFileSync(noModelConfig, "utf8"), beforeNoModel);
 });
 
 test("installed Codex hooks continue one bound work item exactly once through compaction", (t) => {
@@ -1099,8 +1378,10 @@ test("installed Codex hooks fail open on malformed input, reconciliation drift, 
   });
   assert.equal(drifted.status, 0, drifted.stderr);
   const driftedOutput = JSON.parse(drifted.stdout);
-  assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), false);
-  assert.match(driftedOutput.systemMessage, /degraded.*reconciliation failed/i);
+  assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), true, "a git HEAD advance since the last checkpoint is normal drift, not a failure: the capsule must still be injected");
+  assert.match(driftedOutput.hookSpecificOutput.additionalContext, /Continue safely\./);
+  const driftedEventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-6", "events.jsonl");
+  assert.equal(readJsonLines(driftedEventsPath).at(-1).reconciliation, "confirmed-with-drift");
 
   const storageRoot = workspace(t, "uas codex storage failure-");
   initGit(storageRoot);
@@ -1121,6 +1402,130 @@ test("installed Codex hooks fail open on malformed input, reconciliation drift, 
     hook_event_name: "PreCompact",
     turn_id: "turn-storage",
     trigger: "auto",
+  });
+  assert.equal(storageFailure.status, 0, storageFailure.stderr);
+  assert.match(JSON.parse(storageFailure.stdout).systemMessage, /degraded.*continues/i);
+});
+
+test("installed Claude hooks continue one bound work item exactly once through compaction", (t) => {
+  const root = workspace(t, "uas claude lifecycle-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const activate = runCli(installedCli, [
+    "activate", "--work-item", "issue-7", "--harness", "claude", "--session", "claude-session-a", "--project", root,
+  ], { cwd: root });
+  assert.equal(activate.status, 0, activate.stderr);
+  const longText = "A".repeat(800);
+  const checkpoint = runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-7", "--harness", "claude", "--session", "claude-session-a",
+    "--expected-revision", "0",
+    "--objective", `Keep objective ghp_abcdefghijklmnopqrstuvwxyz1234567890. ${longText}`,
+    "--success-criteria", `Keep success criteria. ${longText}`,
+    "--phase", `Implementation phase. ${longText}`,
+    "--decisions", `Keep binding decisions. ${longText}`,
+    "--validation", `npm test exits zero. ${longText}`,
+    "--blockers", `No blockers. ${longText}`,
+    "--next", `Implement the next slice. ${longText}`,
+    "--pointers", "[README](README.md)",
+    "--project", root,
+  ], { cwd: root });
+  assert.equal(checkpoint.status, 0, checkpoint.stderr);
+
+  const common = { session_id: "claude-session-a", model: "claude-5", permission_mode: "default" };
+  const pre = { ...common, hook_event_name: "PreCompact", turn_id: "turn-1", trigger: "auto" };
+  const post = { ...common, hook_event_name: "PostCompact", turn_id: "turn-1", trigger: "auto" };
+  const start = { ...common, hook_event_name: "SessionStart", source: "compact" };
+
+  for (const [event, payload] of [["PreCompact", pre], ["PreCompact", pre], ["PostCompact", post], ["PostCompact", post]]) {
+    const invocation = runCli(installedCli, ["hook", "claude", event, "--project", root], { cwd: root, stdin: JSON.stringify(payload) });
+    assert.equal(invocation.status, 0, invocation.stderr);
+    assert.doesNotThrow(() => JSON.parse(invocation.stdout));
+  }
+  const firstStart = runCli(installedCli, ["hook", "claude", "SessionStart", "--project", root], { cwd: root, stdin: JSON.stringify(start) });
+  const duplicateStart = runCli(installedCli, ["hook", "claude", "SessionStart", "--project", root], { cwd: root, stdin: JSON.stringify(start) });
+  assert.equal(firstStart.status, 0, firstStart.stderr);
+  assert.equal(duplicateStart.status, 0, duplicateStart.stderr);
+  const firstOutput = JSON.parse(firstStart.stdout);
+  const duplicateOutput = JSON.parse(duplicateStart.stdout);
+  const context = firstOutput.hookSpecificOutput.additionalContext;
+  assert.equal(Buffer.byteLength(context, "utf8") <= 500, true);
+  for (const label of ["Objective", "Success criteria", "Current phase", "Binding decisions", "Validation state", "Blockers", "Next action", "Authority pointers"]) {
+    assert.match(context, new RegExp(`${label}:`));
+  }
+  assert.doesNotMatch(context, /ghp_abcdefghijklmnopqrstuvwxyz1234567890/);
+  assert.match(context, /\[REDACTED_TOKEN\]/);
+  assert.equal(Object.hasOwn(duplicateOutput, "hookSpecificOutput"), false);
+  assert.match(duplicateOutput.systemMessage, /duplicate/i);
+
+  const eventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-7", "events.jsonl");
+  const events = readJsonLines(eventsPath);
+  assert.deepEqual(events.map((event) => event.kind), ["pre-compact", "post-compact", "session-start-compact"]);
+  assert.equal(new Set(events.map((event) => event.idempotencyKey)).size, 3);
+  assert.equal(events[0].transition, "checkpoint-recorded");
+  assert.equal(events[1].transition, "compaction-recorded");
+  assert.equal(events[2].transition, "reconciled-and-injected");
+  assert.equal(events[2].injectedTokenEstimate <= 500, true);
+  assert.equal(events.every((event) => event.capsuleRevision === 1), true);
+  assert.doesNotMatch(readFileSync(eventsPath, "utf8"), /Keep objective|ghp_|permission_mode/);
+
+  const unbound = runCli(installedCli, ["hook", "claude", "SessionStart", "--project", root], {
+    cwd: root, stdin: JSON.stringify({ ...start, session_id: "unbound-session" }),
+  });
+  assert.equal(unbound.status, 0, unbound.stderr);
+  const unboundOutput = JSON.parse(unbound.stdout);
+  assert.equal(Object.hasOwn(unboundOutput, "hookSpecificOutput"), false);
+  assert.match(unboundOutput.systemMessage, /No active work item/);
+  assert.doesNotMatch(unbound.stdout, /Keep objective/);
+  assert.equal(readJsonLines(eventsPath).length, 3);
+
+  const capsule = readFileSync(join(root, ".agents", "state", "continuity", "work-items", "issue-7", "semantic.md"), "utf8");
+  assert.match(capsule, /^revision: 1$/m);
+});
+
+test("installed Claude hooks fail open on malformed input and storage errors, and inject despite reconciliation drift", (t) => {
+  const root = workspace(t, "uas claude degraded-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-7", "--harness", "claude", "--session", "claude-session-a", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-7", "--harness", "claude", "--session", "claude-session-a",
+    "--expected-revision", "0", "--objective", "Continue safely.", "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const malformed = runCli(installedCli, ["hook", "claude", "PreCompact", "--project", root], { cwd: root, stdin: "{" });
+  assert.equal(malformed.status, 0, malformed.stderr);
+  assert.match(JSON.parse(malformed.stdout).systemMessage, /degraded.*continues/i);
+
+  const common = { session_id: "claude-session-a", model: "claude-5", turn_id: "turn-1", trigger: "auto" };
+  assert.equal(runCli(installedCli, ["hook", "claude", "PreCompact", "--project", root], { cwd: root, stdin: JSON.stringify({ ...common, hook_event_name: "PreCompact" }) }).status, 0);
+  assert.equal(runCli(installedCli, ["hook", "claude", "PostCompact", "--project", root], { cwd: root, stdin: JSON.stringify({ ...common, hook_event_name: "PostCompact" }) }).status, 0);
+  write(join(root, "advance.txt"), "advance\n");
+  assert.equal(spawnSync("git", ["add", "advance.txt"], { cwd: root, windowsHide: true }).status, 0);
+  assert.equal(spawnSync("git", ["commit", "-m", "advance"], { cwd: root, windowsHide: true }).status, 0);
+  const drifted = runCli(installedCli, ["hook", "claude", "SessionStart", "--project", root], {
+    cwd: root,
+    stdin: JSON.stringify({ session_id: "claude-session-a", model: "claude-5", hook_event_name: "SessionStart", source: "compact" }),
+  });
+  assert.equal(drifted.status, 0, drifted.stderr);
+  const driftedOutput = JSON.parse(drifted.stdout);
+  assert.equal(Object.hasOwn(driftedOutput, "hookSpecificOutput"), true, "a git HEAD advance since the last checkpoint is normal drift, not a failure: the capsule must still be injected");
+  assert.match(driftedOutput.hookSpecificOutput.additionalContext, /Continue safely\./);
+  const driftedEventsPath = join(root, ".agents", "state", "continuity", "work-items", "issue-7", "events.jsonl");
+  assert.equal(readJsonLines(driftedEventsPath).at(-1).reconciliation, "confirmed-with-drift");
+
+  const storageRoot = workspace(t, "uas claude storage failure-");
+  initGit(storageRoot);
+  const storageCli = installFixtureRuntime(storageRoot);
+  assert.equal(runCli(storageCli, [
+    "activate", "--work-item", "issue-7", "--harness", "claude", "--session", "storage-session", "--project", storageRoot,
+  ], { cwd: storageRoot }).status, 0);
+  const eventsPath = join(storageRoot, ".agents", "state", "continuity", "work-items", "issue-7", "events.jsonl");
+  mkdirSync(eventsPath);
+  const storageFailure = runCli(storageCli, ["hook", "claude", "PreCompact", "--project", storageRoot], {
+    cwd: storageRoot,
+    stdin: JSON.stringify({ session_id: "storage-session", model: "claude-5", hook_event_name: "PreCompact", turn_id: "turn-storage", trigger: "auto" }),
   });
   assert.equal(storageFailure.status, 0, storageFailure.stderr);
   assert.match(JSON.parse(storageFailure.stdout).systemMessage, /degraded.*continues/i);

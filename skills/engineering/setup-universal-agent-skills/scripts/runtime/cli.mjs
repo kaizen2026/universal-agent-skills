@@ -16,6 +16,7 @@ import {
   reconcileWorkItem,
   redactSensitive,
   resolveProjectPath,
+  recordContinuityDiagnostic,
   processContinuityEvent,
   saveCheckpoint,
   saveWorkItemCapsule,
@@ -24,6 +25,8 @@ import {
   writeJsonAtomic,
 } from "./core.mjs";
 import { adapterStatus, detectHosts, hostSignals, HOSTS, installAdapters, removeAdapters } from "./adapters.mjs";
+
+export { HOOK_CONTRACT } from "./core.mjs";
 
 const runtimeDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -122,6 +125,15 @@ function status(project, args, io) {
         ? "stored setup input; current session window is unverified"
         : "configured default; current session window is unverified";
     thresholdValue.currentSessionVerified = Boolean(suppliedWindow);
+    thresholdValue.sourceTag = {
+      contextWindow: suppliedWindow
+        ? "measured-current-session"
+        : storedWindows.length === 1
+          ? "configured-setup"
+          : "unverified",
+      policy: "configured-policy",
+      confidence: suppliedWindow || storedWindows.length === 1 ? "verified-capacity" : "unverified-capacity",
+    };
   }
   const output = {
     ok: true,
@@ -178,14 +190,14 @@ function checkpoint(project, args, io) {
       ? undefined
       : positiveIntegerArg(args["lock-timeout-ms"], "--lock-timeout-ms"),
     fields: {
-      objective: args.objective,
-      successCriteria: args["success-criteria"],
-      phase: args.phase,
-      decisions: args.decisions,
-      validation: joinValues(args.completed, args.validation),
-      blockers: args.blockers || args.risks,
-      next: args.next,
-      pointers: args.pointers,
+      objective: stringArg(args.objective, "--objective"),
+      successCriteria: stringArg(args["success-criteria"], "--success-criteria"),
+      phase: stringArg(args.phase, "--phase"),
+      decisions: stringArg(args.decisions, "--decisions"),
+      validation: joinValues(stringArg(args.completed, "--completed"), stringArg(args.validation, "--validation")),
+      blockers: stringArg(args.blockers, "--blockers") || stringArg(args.risks, "--risks"),
+      next: stringArg(args.next, "--next"),
+      pointers: stringArg(args.pointers, "--pointers"),
     },
   });
   if (!workItem.ok) {
@@ -268,9 +280,14 @@ function hook(project, rawArgs, args, io) {
     try {
       return codexHook(project, event, parseHookInput(io.readStdin()), io);
     } catch (error) {
-      const message = `Continuity degraded; Codex lifecycle continues. ${redactSensitive(error?.message || error)}`;
-      io.write(JSON.stringify({ systemMessage: message }));
-      return { ok: false, degraded: true, message };
+      return degradedHook(project, "codex", event, error, io);
+    }
+  }
+  if (host === "claude") {
+    try {
+      return claudeHook(project, event, parseHookInput(io.readStdin()), io);
+    } catch (error) {
+      return degradedHook(project, "claude", event, error, io);
     }
   }
   const input = safeStdinJson(io.readStdin());
@@ -392,6 +409,13 @@ function processThresholdCrossing({ project, config, harness, sessionId, reached
   }
 
   state.sessions[key] = { reached, updatedAt: new Date().toISOString() };
+  const cutoff = Date.now() - config.retention.eventDays * 24 * 60 * 60 * 1000;
+  const retained = Object.entries(state.sessions)
+    .filter(([, value]) => Date.parse(value.updatedAt || "") >= cutoff)
+    .sort(([, left], [, right]) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""))
+    .slice(0, config.retention.maxEvents)
+    .reduce((output, [session, value]) => ({ ...output, [session]: value }), {});
+  state.sessions = retained;
   writeJsonAtomic(telemetryPath, state);
   return { newlyCrossed: reached && !previous, checkpoint, handoff };
 }
@@ -454,7 +478,6 @@ function codexHook(project, event, input, io) {
   const { config } = ensureConfig(project);
   const normalized = String(event || input.hook_event_name || "").toLowerCase();
   const sessionId = input.session_id;
-  if (!sessionId) throw new Error("Hook input is missing session_id.");
   let kind;
   let transition;
   if (normalized.includes("precompact")) {
@@ -474,6 +497,10 @@ function codexHook(project, event, input, io) {
     io.write("{}");
     return {};
   }
+  if (!sessionId) {
+    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "codex", event: kind, fields: { preserveClaims: true } });
+    return writeCodexDiagnostic(io, "No active work item. Supply --work-item or a bound --harness and --session.");
+  }
   const result = processContinuityEvent({
     project,
     config,
@@ -484,18 +511,21 @@ function codexHook(project, event, input, io) {
     action: kind === "session-start-compact"
       ? () => {
           const reconciliation = reconcileWorkItem({ project, config, harness: "codex", sessionId });
-          if (!reconciliation.ok) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
+          if (!reconciliation.document) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
           const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
           return {
             transition: "reconciled-and-injected",
-            reconciliation: "confirmed",
+            reconciliation: reconciliation.ok ? "confirmed" : "confirmed-with-drift",
             injectedTokenEstimate: injection.estimatedTokens,
             additionalContext: injection.text,
           };
         }
       : () => ({ transition, reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
   });
-  if (!result.ok) return writeCodexDiagnostic(io, result.message || result.reason);
+  if (!result.ok) {
+    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "codex", event: kind, fields: { preserveClaims: true } });
+    return writeCodexDiagnostic(io, result.message || result.reason);
+  }
   if (result.duplicate) {
     return writeCodexDiagnostic(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
   }
@@ -517,6 +547,88 @@ function parseHookInput(text) {
   const value = JSON.parse(text);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Hook input must be a JSON object.");
   return value;
+}
+
+function claudeHook(project, event, input, io) {
+  const { config } = ensureConfig(project);
+  const normalized = String(event || input.hook_event_name || "").toLowerCase();
+  const sessionId = input.session_id || input.sessionId || input.conversation_id || input.conversationId;
+  const nativeIdentity = input.turn_id || input.event_id || input.compaction_id || input.compact_id || input.uuid || input.id || null;
+  let kind;
+  let transition;
+  if (normalized.includes("precompact")) {
+    kind = "pre-compact";
+    transition = "checkpoint-recorded";
+  } else if (normalized.includes("postcompact")) {
+    kind = "post-compact";
+    transition = "compaction-recorded";
+  } else if (normalized.includes("sessionstart")) {
+    if (String(input.source || "").toLowerCase() !== "compact") {
+      const reconciliation = reconcileWorkItem({ project, config, harness: "claude", sessionId });
+      const context = reconciliation.workItemId
+        ? `Work item ${reconciliation.workItemId} resolved by ${reconciliation.resolution}. Automatic capsule injection is not enabled outside compaction.`
+        : `Continuity state was not activated. ${reconciliation.report}`;
+      return writeHookOutput("claude", event, context, "sessionstart", io);
+    }
+    kind = "session-start-compact";
+  } else {
+    io.write("{}");
+    return {};
+  }
+  if (!sessionId) {
+    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "claude", event: kind, fields: { preserveClaims: true } });
+    return writeClaudeDiagnostic(io, "No active work item. Supply --work-item or a bound --harness and --session.");
+  }
+  const result = processContinuityEvent({
+    project,
+    config,
+    harness: "claude",
+    sessionId,
+    kind,
+    input: { ...input, turn_id: nativeIdentity, trigger: input.trigger || "auto" },
+    action: kind === "session-start-compact"
+      ? () => {
+          const reconciliation = reconcileWorkItem({ project, config, harness: "claude", sessionId });
+          if (!reconciliation.document) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
+          const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
+          return {
+            transition: "reconciled-and-injected",
+            reconciliation: reconciliation.ok ? "confirmed" : "confirmed-with-drift",
+            injectedTokenEstimate: injection.estimatedTokens,
+            additionalContext: injection.text,
+          };
+        }
+      : () => ({ transition, reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
+  });
+  if (!result.ok) {
+    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "claude", event: kind, fields: { preserveClaims: true } });
+    return writeClaudeDiagnostic(io, result.message || result.reason);
+  }
+  if (result.duplicate) return writeClaudeDiagnostic(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
+  if (kind === "session-start-compact") {
+    const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.additionalContext } };
+    io.write(JSON.stringify(output));
+    return output;
+  }
+  return writeClaudeDiagnostic(io, `${event} ${transition} for work item ${result.workItemId}.`);
+}
+
+function degradedHook(project, harness, event, error, io) {
+  const message = `Continuity degraded; ${harness} lifecycle continues. ${redactSensitive(error?.message || error)}`;
+  try {
+    const { config } = ensureConfig(project);
+    recordContinuityDiagnostic({ project, config, harness, event, message });
+  } catch {
+    // Hook failure must remain fail-open even when local diagnostics cannot be persisted.
+  }
+  io.write(JSON.stringify({ systemMessage: message }));
+  return { ok: false, degraded: true, message };
+}
+
+function writeClaudeDiagnostic(io, message) {
+  const output = { systemMessage: redactSensitive(message || "No active work item.") };
+  io.write(JSON.stringify(output));
+  return output;
 }
 
 function writeCodexDiagnostic(io, message) {
@@ -544,6 +656,12 @@ function integerArgAtLeast(value, name, minimum) {
 
 function joinValues(...values) {
   return values.filter(Boolean).join("\n\n");
+}
+
+function stringArg(value, name) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${name} requires a text value`);
+  return value;
 }
 
 function safeStdinJson(text) {

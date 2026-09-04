@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { relative, resolve } from "node:path";
 import {
   executableAvailable,
+  HOOK_CONTRACT,
   readJson,
   removeFileIfEmptyJson,
   resolveWithin,
@@ -67,6 +68,9 @@ export function installAdapters({ project, config, hosts, contextWindow, setting
   for (const host of hosts) {
     const hostState = state.hosts[host] || { createdFiles: [], configuredAt: null };
     const result = INSTALLERS[host]({ project, config, contextWindow, state: hostState, settingsPaths, codexOptions });
+    hostState.adapterVersion = 2;
+    hostState.hookContract = HOOK_CONTRACT;
+    hostState.ownership = "universal-agent-skills";
     hostState.configuredAt = new Date().toISOString();
     hostState.configured = result.configured;
     hostState.threshold = result.threshold;
@@ -123,6 +127,13 @@ export function adapterStatus(project) {
       configurationDrift,
       installedThreshold: hostState.threshold || null,
       capability: CAPABILITIES[host],
+      thresholdSource: hostState.threshold?.contextCapacitySource || "unverified",
+      thresholdConfidence: hostState.threshold?.contextWindowVerified ? "verified" : "unverified",
+      duplicateOwnership: managedHookDiagnostics(project, host),
+      compatibility: {
+        adapterVersion: hostState.adapterVersion || 1,
+        hookContract: hostState.hookContract || "legacy-v1",
+      },
     };
   });
 }
@@ -152,12 +163,15 @@ function adapterConfigurationVerified(project, host, state) {
       const source = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
       const hooks = readJson(hooksPath, {});
       return source.includes(`model_auto_compact_token_limit = ${state.managedThreshold} # universal-agent-skills`)
-        && source.includes(`model_auto_compact_token_limit_scope = "${state.managedScope}" # universal-agent-skills`)
-        && codexHooksVerified(hooks.hooks, state.managedCodexHooks);
+        && (!state.managedScope || source.includes(`model_auto_compact_token_limit_scope = "${state.managedScope}" # universal-agent-skills`))
+        && (!state.managedCodexHooks || codexHooksVerified(hooks.hooks, state.managedCodexHooks));
     }
     if (host === "claude") {
       const settings = readJson(resolveWithin(project, ".claude/settings.local.json"), {});
-      return settings.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW === state.managedWindow
+      const windowVerified = !state.managedWindow || settings.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW === state.managedWindow;
+      const percentVerified = !state.managedPercent || settings.env?.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE === state.managedPercent;
+      return windowVerified
+        && percentVerified
         && JSON.stringify(settings.hooks || {}).includes(MANAGED_FRAGMENT);
     }
     if (host === "cursor") return fileContains(resolveWithin(project, ".cursor/hooks.json"), MANAGED_FRAGMENT);
@@ -179,7 +193,7 @@ function fileContains(path, fragment) {
 
 const CAPABILITIES = Object.freeze({
   codex: "threshold-controlled compaction with PreCompact, PostCompact, and SessionStart hooks",
-  claude: "host-controlled compaction with a 155k calculation window and pre/post/session hooks",
+  claude: "host-controlled compaction with an explicitly reported model window, independent trigger policy, and pre/post/session hooks",
   cursor: "native-threshold preCompact checkpointing; sessionStart applies only to a new composer and is unavailable in cloud",
   copilot: "CLI/cloud preCompact checkpointing plus session-start reconciliation; cloud state is ephemeral and VS Code uses a separate Preview schema",
   antigravity: "CLI status-line telemetry warning plus checkpoint/handoff; IDE continuity remains manual and a new session is explicit",
@@ -210,27 +224,35 @@ function installCodex({ project, config, contextWindow, state, codexOptions = {}
 
 function installClaude({ project, config, contextWindow, state, settingsPaths = {} }) {
   const detectedWindow = Number(contextWindow) > 0 ? Number(contextWindow) : null;
-  const report = thresholdReport(config, detectedWindow);
+  const report = {
+    ...thresholdReport(config, detectedWindow),
+    contextCapacitySource: detectedWindow ? "setup-input" : "unverified",
+  };
   const path = resolveWithin(project, ".claude/settings.local.json");
   rememberCreated(state, project, path);
   const settings = readJson(path, {});
   settings.env ||= {};
   state.claudeEnv ||= {};
   captureEnv(settings.env, state.claudeEnv, "CLAUDE_CODE_AUTO_COMPACT_WINDOW");
-  const calculationWindow = detectedWindow && detectedWindow < 200000
-    ? Math.max(100000, Math.floor(detectedWindow))
-    : 155000;
-  settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(calculationWindow);
-  state.managedWindow = String(calculationWindow);
-
-  if (detectedWindow && detectedWindow < 200000) {
+  if (detectedWindow) {
+    settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(Math.floor(detectedWindow));
+    state.managedWindow = String(Math.floor(detectedWindow));
     captureEnv(settings.env, state.claudeEnv, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE");
     settings.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "75";
     state.managedPercent = "75";
-  } else if (state.managedPercent && settings.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE === state.managedPercent) {
-    restoreEnv(settings.env, state.claudeEnv, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE");
+  } else {
+    if (state.managedWindow && settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW === state.managedWindow) {
+      restoreEnv(settings.env, state.claudeEnv, "CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    }
+    delete state.managedWindow;
+    if (state.managedPercent && settings.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE === state.managedPercent) {
+      restoreEnv(settings.env, state.claudeEnv, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE");
+    }
     delete state.managedPercent;
   }
+  state.modelContextWindow = detectedWindow || state.modelContextWindow || null;
+  state.contextCapacitySource = detectedWindow ? "setup-input" : "unverified";
+  state.compactionTriggerPolicy = { owner: "claude", strategy: "host-controlled", configuredPercent: state.managedPercent || null };
   settings.hooks ||= {};
   upsertNested(settings.hooks, "PreCompact", "manual|auto", claudeHandler("PreCompact"));
   upsertNested(settings.hooks, "PostCompact", "manual|auto", claudeHandler("PostCompact"));
@@ -238,7 +260,9 @@ function installClaude({ project, config, contextWindow, state, settingsPaths = 
   writeJsonAtomic(path, settings);
 
   const statusLine = installClaudeStatusLine({ project, state, settingsPaths });
-  const base = "The 155k calculation window is an upper bound, not an exact consumed-token trigger; actual timing remains Claude-controlled.";
+  const base = detectedWindow
+    ? `Claude model window ${Math.floor(detectedWindow)} is configured separately from the host-controlled 75% trigger policy.`
+    : "Claude model window is unverified; host-controlled compaction remains enabled without inventing a fallback capacity.";
   return result(
     "claude",
     statusLine.conflict ? [path] : [path, statusLine.path],
@@ -281,7 +305,7 @@ function installClaudeStatusLine({ project, state, settingsPaths }) {
 }
 
 function installCursor({ project, config, contextWindow, state }) {
-  const report = thresholdReport(config, contextWindow);
+  const report = { ...thresholdReport(config, contextWindow), contextCapacitySource: Number(contextWindow) > 0 ? "setup-input" : "unverified" };
   const path = resolveWithin(project, ".cursor/hooks.json");
   rememberCreated(state, project, path);
   const settings = readJson(path, { version: 1, hooks: {} });
@@ -294,7 +318,7 @@ function installCursor({ project, config, contextWindow, state }) {
 }
 
 function installCopilot({ project, config, contextWindow, state }) {
-  const report = thresholdReport(config, contextWindow);
+  const report = { ...thresholdReport(config, contextWindow), contextCapacitySource: Number(contextWindow) > 0 ? "setup-input" : "unverified" };
   const path = resolveWithin(project, ".github/hooks/universal-agent-skills.json");
   rememberCreated(state, project, path);
   const settings = readJson(path, { version: 1, hooks: {} });
@@ -307,7 +331,7 @@ function installCopilot({ project, config, contextWindow, state }) {
 }
 
 function installAntigravity({ project, config, contextWindow, state, settingsPaths }) {
-  const report = thresholdReport(config, contextWindow);
+  const report = { ...thresholdReport(config, contextWindow), contextCapacitySource: Number(contextWindow) > 0 ? "setup-input" : "unverified" };
   const helperPath = resolveWithin(project, ".agents/universal-agent-skills/adapters/antigravity.json");
   const settingsOverride = settingsPaths.antigravity || process.env.UAS_ANTIGRAVITY_SETTINGS;
   const settingsPath = settingsOverride
@@ -509,11 +533,14 @@ function resolveCodexPolicy(project, path, config, contextWindow, options) {
       || !Number.isFinite(observedAt)
       || evidence.contextCapacity !== capacity
       || evidence.prefixTokens !== prefixTokens
-      || (activeModel && evidence.model !== activeModel)) {
+      || evidence.model !== activeModel) {
       throw new Error("Codex prefix evidence must identify its source, model, capacity, prefix token count, and observation time, and must match the active configuration");
     }
     installedTokenLimit = report.effectiveTokens - prefixTokens;
-    if (installedTokenLimit < 1 || capacity - (prefixTokens + installedTokenLimit) < config.policy.minimumReserveTokens) {
+    // capacity - (prefixTokens + installedTokenLimit) always equals capacity - report.effectiveTokens,
+    // which thresholdReport() already guarantees is >= config.policy.minimumReserveTokens; only the
+    // prefix itself can make the remaining body budget non-positive, so that's the one real check.
+    if (installedTokenLimit < 1) {
       throw new Error("body_after_prefix cannot preserve the configured token reserve with this prefix");
     }
     scopeConfidence = "evidence-verified-prefix";
@@ -719,5 +746,38 @@ function result(host, paths, threshold, limitation, configured = true) {
     files: paths.map((path) => path.replaceAll("\\", "/")),
     threshold,
     limitation,
+    compatibility: { adapterVersion: 2, hookContract: HOOK_CONTRACT },
+    ownership: "universal-agent-skills",
+  };
+}
+
+function managedHookDiagnostics(project, host) {
+  const counts = {};
+  try {
+    if (host === "codex") {
+      const hooks = readJson(resolveWithin(project, ".codex/hooks.json"), {}).hooks || {};
+      for (const [event, entries] of Object.entries(hooks)) {
+        counts[event] = (Array.isArray(entries) ? entries : []).reduce(
+          (total, entry) => total + (Array.isArray(entry?.hooks) ? entry.hooks.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length : 0),
+          0,
+        );
+      }
+    } else if (host === "claude") {
+      const hooks = readJson(resolveWithin(project, ".claude/settings.local.json"), {}).hooks || {};
+      for (const [event, entries] of Object.entries(hooks)) {
+        counts[event] = (Array.isArray(entries) ? entries : []).reduce(
+          (total, entry) => total + (Array.isArray(entry?.hooks) ? entry.hooks.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length : 0),
+          0,
+        );
+      }
+    }
+  } catch {
+    return { owner: "universal-agent-skills", duplicate: false, counts, confidence: "unverified" };
+  }
+  return {
+    owner: "universal-agent-skills",
+    counts,
+    duplicate: Object.values(counts).some((count) => count > 1),
+    confidence: Object.keys(counts).length > 0 ? "verified" : "unverified",
   };
 }
