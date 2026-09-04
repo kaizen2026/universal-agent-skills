@@ -453,7 +453,9 @@ function mergeCodexThreshold(path, threshold, state) {
   mergeCodexRootSetting({
     path,
     state,
-    pattern: /^\s*model_auto_compact_token_limit\s*=.*$/m,
+    // [ \t]* rather than \s*: with the m flag, \s* would let ^ match at a preceding blank
+    // line and swallow its newline on every repeat setup.
+    pattern: /^[ \t]*model_auto_compact_token_limit\s*=.*$/m,
     managedLine: `model_auto_compact_token_limit = ${threshold} # universal-agent-skills`,
     reversalKey: "codexThreshold",
     managedKey: "managedThreshold",
@@ -466,7 +468,7 @@ function mergeCodexScope(path, scope, state) {
   mergeCodexRootSetting({
     path,
     state,
-    pattern: /^\s*model_auto_compact_token_limit_scope\s*=.*$/m,
+    pattern: /^[ \t]*model_auto_compact_token_limit_scope\s*=.*$/m,
     managedLine: `model_auto_compact_token_limit_scope = "${scope}" # universal-agent-skills`,
     reversalKey: "codexScope",
     managedKey: "managedScope",
@@ -477,7 +479,7 @@ function mergeCodexScope(path, scope, state) {
 function mergeCodexRootSetting({ path, state, pattern, managedLine, reversalKey, managedKey, managedValue, insertionComment }) {
   let source = existsSync(path) ? readFileSync(path, "utf8") : "";
   const eol = source.includes("\r\n") ? "\r\n" : "\n";
-  const firstTable = source.search(/^\s*\[/m);
+  const firstTable = source.search(/^[ \t]*\[/m);
   const rootEnd = firstTable < 0 ? source.length : firstTable;
   const root = source.slice(0, rootEnd);
   const rest = source.slice(rootEnd);
@@ -486,9 +488,12 @@ function mergeCodexRootSetting({ path, state, pattern, managedLine, reversalKey,
     if (!state[reversalKey]) state[reversalKey] = { action: "replaced", previousLine: prior };
     source = root.replace(pattern, managedLine) + rest;
   } else {
-    if (!state[reversalKey]) state[reversalKey] = { action: "added" };
+    // A root that had no trailing newline gets one before the managed line; remember that
+    // so removal can take it back and restore the file byte-for-byte.
+    const appendedEol = Boolean(root) && !root.endsWith(eol);
+    if (!state[reversalKey]) state[reversalKey] = { action: "added", appendedEol };
     const comment = insertionComment ? `${insertionComment}${eol}` : "";
-    source = `${root}${root && !root.endsWith(eol) ? eol : ""}${comment}${managedLine}${eol}${rest}`;
+    source = `${root}${appendedEol ? eol : ""}${comment}${managedLine}${eol}${rest}`;
   }
   writeTextAtomic(path, source);
   state[managedKey] = managedValue;
@@ -496,7 +501,7 @@ function mergeCodexRootSetting({ path, state, pattern, managedLine, reversalKey,
 
 function resolveCodexPolicy(project, path, config, contextWindow, options) {
   const source = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const firstTable = source.search(/^\s*\[/m);
+  const firstTable = source.search(/^[ \t]*\[/m);
   const root = source.slice(0, firstTable < 0 ? source.length : firstTable);
   const configuredCapacity = Number(root.match(/^\s*model_context_window\s*=\s*(\d+)\s*(?:#.*)?$/m)?.[1]);
   const explicitCapacity = Number(contextWindow);
@@ -568,7 +573,9 @@ function removeCodexThreshold(project, path, state) {
     project,
     path,
     state,
-    managedPattern: /^model_auto_compact_token_limit\s*=\s*\d+\s*# universal-agent-skills\s*$/m,
+    // The trailing capture group takes the line's own newline with it, so removing an
+    // "added" line leaves no orphan blank line behind and a "replaced" line keeps its EOL.
+    managedPattern: /^model_auto_compact_token_limit\s*=\s*\d+[ \t]*# universal-agent-skills[ \t]*(\r?\n|$)/m,
     reversalKey: "codexThreshold",
     insertionCommentPattern: /^# universal-agent-skills managed auto-compaction threshold\r?\n/m,
   });
@@ -579,7 +586,7 @@ function removeCodexScope(project, path, state) {
     project,
     path,
     state,
-    managedPattern: /^model_auto_compact_token_limit_scope\s*=\s*"(?:total|body_after_prefix)"\s*# universal-agent-skills\s*$/m,
+    managedPattern: /^model_auto_compact_token_limit_scope\s*=\s*"(?:total|body_after_prefix)"[ \t]*# universal-agent-skills[ \t]*(\r?\n|$)/m,
     reversalKey: "codexScope",
   });
 }
@@ -589,10 +596,12 @@ function removeCodexRootSetting({ project, path, state, managedPattern, reversal
   if (!managedPattern.test(source)) return;
   const reversal = state[reversalKey];
   if (reversal?.action === "replaced" && reversal.previousLine) {
-    source = source.replace(managedPattern, reversal.previousLine);
+    source = source.replace(managedPattern, (_match, eol) => `${reversal.previousLine}${eol}`);
   } else {
     if (insertionCommentPattern) source = source.replace(insertionCommentPattern, "");
-    source = source.replace(managedPattern, "").replace(/^\s*\r?\n/, "");
+    source = source.replace(managedPattern, "");
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    if (reversal?.appendedEol && source.endsWith(eol)) source = source.slice(0, -eol.length);
   }
   if (source.trim() === "" && wasCreated(state, project, path)) unlinkSync(path);
   else writeTextAtomic(path, source);

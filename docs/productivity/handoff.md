@@ -10,6 +10,8 @@ You invoke this by typing `/handoff` — the agent will not fire it on its own. 
 
 The handoff carries objective, status, decisions, exact validation, dirty-tree inventory, pointers, risks, one next action, and suggested skills. It references specs, issues, ADRs, contracts, commits, and diffs rather than duplicating them.
 
+It is sourced from the active Work-Item Capsule (`handoff --work-item <id>`, or the bound harness and session) and written in the portable checkpoint schema, so arrival is the same regardless of source: the receiver inspects it with `resume --input` and adopts it with `import-legacy-checkpoint --work-item <id> --input <file>`. A legacy workspace-wide checkpoint can still be exported with `--input`, but nothing is ever imported automatically on the other side.
+
 It contains no raw transcript, credentials, cookies, personal data, or secret-dependent command output. Local-only pointers are labeled so the receiver knows they will not travel through Git.
 
 The export records its own time but preserves the source checkpoint's Git and validation provenance, includes export-time reconciliation, and replaces absolute project and user-home prefixes with portable labels. Old evidence is never relabelled as current merely because the handoff was created later.

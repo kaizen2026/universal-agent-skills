@@ -18,7 +18,7 @@ Resolve the active capsule from an explicit Work Item ID first, then the current
 - Exact test results recorded in the checkpoint
 - Commands that may have been interrupted or left partial output
 
-If the runtime exists, run `node .agents/universal-agent-skills/runtime/cli.mjs resume` with `--work-item <id>` or the bound `--harness` and `--session` to produce the initial report. Independently inspect any high-risk divergence it flags. A legacy `current.md` or portable handoff may be inspected only through an explicit `--input`; label it inactive evidence rather than an active capsule.
+If the runtime exists, run `node .agents/universal-agent-skills/runtime/cli.mjs resume` with `--work-item <id>` or the bound `--harness` and `--session` to produce the initial report. Independently inspect any high-risk divergence it flags. A legacy `current.md` or portable handoff may be inspected only through an explicit `--input`; label it inactive evidence rather than an active capsule. To continue such evidence as real work, activate a Work Item ID and adopt it with `import-legacy-checkpoint --work-item <id> --input <path> --expected-revision <n>`; the import records its provenance and never runs on its own.
 
 Classify each checkpoint claim as `Confirmed`, `Changed`, `Missing`, or `Unverified`. Never erase or overwrite a dirty tree to make it resemble the checkpoint. Never call a previously passing test current unless it is still valid for the present HEAD; rerun the smallest relevant safe validation when needed.
 

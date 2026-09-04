@@ -1043,6 +1043,203 @@ test("no automatic hook selects a workspace-wide legacy checkpoint even when a b
   assert.doesNotMatch(context, /LEGACY_WORKSPACE_CHECKPOINT_MARKER/);
 });
 
+test("help lists every runtime command, including hook and import-legacy-checkpoint", async () => {
+  const capture = captureIo();
+  await main(["help"], capture.io);
+  const help = capture.writes.join("\n");
+  for (const command of ["setup", "remove", "status", "threshold", "activate", "checkpoint", "import-legacy-checkpoint", "validate", "resume", "handoff", "hook", "telemetry", "statusline"]) {
+    assert.match(help, new RegExp(`^  ${command} `, "m"), `help must document ${command}`);
+  }
+});
+
+test("handoff exports a Work-Item Capsule in the portable checkpoint schema that a receiver can inspect and import explicitly", (t) => {
+  const root = workspace(t, "uas-capsule-handoff-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  assert.equal(runCli(installedCli, [
+    "activate", "--work-item", "issue-4", "--harness", "codex", "--session", "session-one", "--project", root,
+  ], { cwd: root }).status, 0);
+  assert.equal(runCli(installedCli, [
+    "checkpoint", "--work-item", "issue-4", "--harness", "codex", "--session", "session-one", "--expected-revision", "0",
+    "--objective", "Ship the capsule handoff. Contact ops@example.com if blocked.",
+    "--success-criteria", "The receiver imports it explicitly.",
+    "--decisions", "Emit the checkpoint schema so arrival stays uniform.",
+    "--validation", "node --test: exit 0",
+    "--blockers", "None.",
+    "--next", "Import on the other machine.",
+    "--pointers", "[README](README.md)",
+    "--project", root,
+  ], { cwd: root }).status, 0);
+
+  const output = ".agents/state/continuity/capsule-handoff.md";
+  const exported = runCli(installedCli, ["handoff", "--work-item", "issue-4", "--output", output, "--destination", "a colleague", "--project", root], { cwd: root });
+  assert.equal(exported.status, 0, exported.stderr);
+  const summary = JSON.parse(exported.stdout);
+  assert.equal(summary.workItemId, "issue-4");
+  assert.equal(summary.revision, 1);
+
+  const document = readFileSync(join(root, output), "utf8");
+  assert.equal(validateCheckpoint(document).valid, true, "a capsule handoff must still be a valid portable checkpoint document");
+  assert.match(document, /^sourceWorkItemId: issue-4$/m);
+  assert.match(document, /^sourceCapsuleRevision: 1$/m);
+  assert.match(document, /Exported from Work-Item Capsule issue-4 r1/);
+  assert.match(document, /## Objective and success criteria\s+Ship the capsule handoff\./);
+  assert.match(document, /\*\*Success criteria\*\*\s+The receiver imports it explicitly\./);
+  assert.match(document, /## Next action\s+Import on the other machine\./);
+  assert.match(document, /import-legacy-checkpoint --work-item <id> --input <this file>/);
+  assert.doesNotMatch(document, /ops@example\.com/, "handoffs must be redacted like every other persisted document");
+  assert.equal(document.includes(root), false, "absolute project paths must be replaced with portable labels");
+
+  const bySession = runCli(installedCli, ["handoff", "--harness", "codex", "--session", "session-one", "--output", ".agents/state/continuity/by-session.md", "--project", root], { cwd: root });
+  assert.equal(bySession.status, 0, bySession.stderr);
+  assert.equal(JSON.parse(bySession.stdout).workItemId, "issue-4");
+
+  const inspected = runCli(installedCli, ["resume", "--input", output, "--project", root], { cwd: root });
+  assert.match(inspected.stdout, /Legacy continuity evidence \(explicit only\)/);
+  assert.match(inspected.stdout, /Ship the capsule handoff\./);
+
+  const destination = workspace(t, "uas-capsule-handoff-destination-");
+  initGit(destination);
+  const destinationCli = installFixtureRuntime(destination);
+  const handoffCopy = join(destination, "incoming-handoff.md");
+  write(handoffCopy, document);
+  assert.equal(runCli(destinationCli, [
+    "activate", "--work-item", "issue-4", "--harness", "claude", "--session", "session-two", "--project", destination,
+  ], { cwd: destination }).status, 0);
+  const imported = runCli(destinationCli, [
+    "import-legacy-checkpoint", "--work-item", "issue-4", "--input", handoffCopy, "--expected-revision", "0", "--project", destination,
+  ], { cwd: destination });
+  assert.equal(imported.status, 0, imported.stderr);
+  const capsule = readFileSync(join(destination, ".agents", "state", "continuity", "work-items", "issue-4", "semantic.md"), "utf8");
+  assert.match(capsule, /## Objective\s+Ship the capsule handoff\./);
+  assert.match(capsule, /## Next action\s+Import on the other machine\./);
+  assert.match(capsule, /Imported \d{4}-\d{2}-\d{2}T.*from legacy checkpoint incoming-handoff\.md/);
+
+  const unbound = runCli(installedCli, ["handoff", "--harness", "codex", "--session", "nobody", "--project", root], { cwd: root });
+  assert.notEqual(unbound.status, 0);
+  assert.match(unbound.stderr, /No active work item/);
+});
+
+test("removing the Codex adapter restores config.toml byte-for-byte whether the managed lines were added or replaced", (t) => {
+  for (const original of [
+    'model = "gpt-test"\nmodel_context_window = 200000\n\n[features]\nexample = true\n',
+    'model = "gpt-test"\nmodel_context_window = 200000\nmodel_auto_compact_token_limit = 999\n\n[features]\nexample = true\n',
+    'model = "gpt-test"\r\nmodel_context_window = 200000\r\n\r\n[features]\r\nexample = true\r\n',
+    '\nmodel = "gpt-test"\nmodel_context_window = 200000\n\n[features]\nexample = true\n',
+    'model = "gpt-test"\nmodel_context_window = 200000',
+  ]) {
+    const root = workspace(t, "uas-codex-roundtrip-");
+    const { config } = ensureConfig(root);
+    const configPath = join(root, ".codex", "config.toml");
+    write(configPath, original);
+    installAdapters({ project: root, config, hosts: ["codex"], contextWindow: 128000 });
+    assert.match(readFileSync(configPath, "utf8"), /model_auto_compact_token_limit_scope = "total" # universal-agent-skills/);
+    installAdapters({ project: root, config, hosts: ["codex"], contextWindow: 128000 });
+    removeAdapters({ project: root, hosts: ["codex"] });
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+});
+
+test("a capsule handoff round-trips the capsule schema without placeholders, boilerplate, or invented validation evidence", (t) => {
+  const source = workspace(t, "uas-handoff-fidelity-source-");
+  initGit(source);
+  const sourceCli = installFixtureRuntime(source);
+  assert.equal(runCli(sourceCli, ["activate", "--work-item", "issue-5", "--harness", "codex", "--session", "session-one", "--project", source], { cwd: source }).status, 0);
+  assert.equal(runCli(sourceCli, [
+    "checkpoint", "--work-item", "issue-5", "--expected-revision", "0",
+    "--objective", "Obj", "--success-criteria", "Crit", "--next", "Run the tests.", "--project", source,
+  ], { cwd: source }).status, 0);
+  const output = ".agents/state/continuity/h.md";
+  assert.equal(runCli(sourceCli, ["handoff", "--work-item", "issue-5", "--output", output, "--project", source], { cwd: source }).status, 0);
+  const handoff = readFileSync(join(source, output), "utf8");
+  assert.match(handoff, /^validationGitHead: unavailable$/m, "a capsule with no recorded validation must not travel as validation evidence");
+  assert.match(handoff, /^validationTimestamp: unavailable$/m);
+  const inspected = runCli(sourceCli, ["resume", "--input", output, "--project", source], { cwd: source });
+  assert.match(inspected.stdout, /\| Validation evidence \| Unverified \|/);
+
+  const destination = workspace(t, "uas-handoff-fidelity-destination-");
+  initGit(destination);
+  const destinationCli = installFixtureRuntime(destination);
+  assert.equal(runCli(destinationCli, ["activate", "--work-item", "issue-5", "--harness", "claude", "--session", "session-two", "--project", destination], { cwd: destination }).status, 0);
+  assert.equal(runCli(destinationCli, [
+    "checkpoint", "--work-item", "issue-5", "--expected-revision", "0",
+    "--phase", "REAL PHASE: implementing step 3", "--decisions", "REAL DECISION", "--validation", "node --test: exit 0",
+    "--blockers", "REAL BLOCKER", "--pointers", "[README](README.md)", "--project", destination,
+  ], { cwd: destination }).status, 0);
+  const incoming = join(destination, "incoming.md");
+  write(incoming, handoff);
+  const imported = runCli(destinationCli, ["import-legacy-checkpoint", "--work-item", "issue-5", "--input", incoming, "--expected-revision", "1", "--project", destination], { cwd: destination });
+  assert.equal(imported.status, 0, imported.stderr);
+  const capsulePath = join(destination, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md");
+  const capsule = readFileSync(capsulePath, "utf8");
+  assert.match(capsule, /## Objective\s+Obj\s+## Success criteria\s+Crit\s+## Current phase/, "objective and success criteria must round-trip as separate fields");
+  assert.match(capsule, /## Current phase\s+REAL PHASE: implementing step 3\s+## Binding decisions/, "a placeholder section in the handoff must not overwrite real destination content");
+  assert.match(capsule, /REAL DECISION/);
+  assert.match(capsule, /## Validation state\s+node --test: exit 0\s+## Blockers/);
+  assert.match(capsule, /## Blockers\s+REAL BLOCKER\s+## Next action/);
+  assert.match(capsule, /## Next action\s+Run the tests\.\s+## Authority pointers/, "the exporter's resume instructions must not be folded into the next action");
+  assert.match(capsule, /## Authority pointers\s+\[README\]\(README\.md\)/);
+  assert.doesNotMatch(capsule, /Not recorded\b|\*\*Success criteria\*\*|Suggested skills/);
+
+  const secondHop = ".agents/state/continuity/h2.md";
+  assert.equal(runCli(destinationCli, ["handoff", "--work-item", "issue-5", "--output", secondHop, "--project", destination], { cwd: destination }).status, 0);
+  const returning = join(source, "returning.md");
+  write(returning, readFileSync(join(destination, secondHop), "utf8"));
+  assert.equal(runCli(sourceCli, ["import-legacy-checkpoint", "--work-item", "issue-5", "--input", returning, "--expected-revision", "1", "--project", source], { cwd: source }).status, 0);
+  const returned = readFileSync(join(source, ".agents", "state", "continuity", "work-items", "issue-5", "semantic.md"), "utf8");
+  assert.match(returned, /## Objective\s+Obj\s+## Success criteria\s+Crit\s+## Current phase\s+REAL PHASE: implementing step 3/);
+  assert.match(returned, /## Next action\s+Run the tests\.\s+## Authority pointers/, "a second hop must not accumulate boilerplate");
+  assert.equal((returned.match(/Imported \d{4}-/g) || []).length, 2, "binding decisions carry one provenance line per hop (the destination's own import travelled back with its decisions)");
+  assert.equal((returned.match(/REAL DECISION/g) || []).length, 1);
+  assert.equal(readFileSync(join(source, output), "utf8"), handoff, "handoff export must never modify the source file it exported");
+});
+
+test("handoff rejects an ambiguous source selection instead of silently exporting the wrong thing", (t) => {
+  const root = workspace(t, "uas-handoff-selector-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const onlyHarness = runCli(installedCli, ["handoff", "--harness", "codex", "--output", "h.md", "--project", root], { cwd: root });
+  assert.notEqual(onlyHarness.status, 0);
+  assert.match(onlyHarness.stderr, /both --harness and --session/);
+  assert.equal(existsSync(join(root, "h.md")), false);
+  const mixed = runCli(installedCli, ["handoff", "--input", "old.md", "--work-item", "issue-4", "--output", "h.md", "--project", root], { cwd: root });
+  assert.notEqual(mixed.status, 0);
+  assert.match(mixed.stderr, /not both/);
+  assert.equal(existsSync(join(root, "h.md")), false);
+});
+
+test("a plain Claude session start reports a bound capsule that fails validation instead of calling it resolved", async (t) => {
+  const root = workspace(t, "uas-claude-invalid-capsule-");
+  initGit(root);
+  const { config } = ensureConfig(root);
+  ensureGitignore(root, config);
+  activateWorkItem({ project: root, config, workItemId: "issue-7", harness: "claude", sessionId: "claude-session-a" });
+  const capsulePath = join(root, ".agents", "state", "continuity", "work-items", "issue-7", "semantic.md");
+  write(capsulePath, readFileSync(capsulePath, "utf8").replace(/^## Blockers[ \t]*$/m, "## Removed"));
+  const start = captureIo(JSON.stringify({ session_id: "claude-session-a", hook_event_name: "SessionStart", source: "startup" }));
+  await main(["hook", "claude", "SessionStart", "--project", root], start.io);
+  const context = JSON.parse(start.writes.at(-1)).hookSpecificOutput.additionalContext;
+  assert.match(context, /issue-7 is bound to this session but could not be reconciled/);
+  assert.match(context, /missing heading: Blockers/);
+  assert.doesNotMatch(context, /resolved by session-binding/);
+});
+
+test("a degraded hook diagnostic keeps the session identity of the delivery that failed", (t) => {
+  const root = workspace(t, "uas-degraded-identity-");
+  initGit(root);
+  const installedCli = installFixtureRuntime(root);
+  const malformed = runCli(installedCli, ["hook", "codex", "PreCompact", "--project", root], {
+    cwd: root,
+    stdin: JSON.stringify({ session_id: "codex-session-z", hook_event_name: "PreCompact", trigger: "auto" }),
+  });
+  assert.equal(malformed.status, 0, malformed.stderr);
+  assert.match(JSON.parse(malformed.stdout).systemMessage, /degraded.*continues.*turn_id/i);
+  const diagnostics = readJsonLines(join(root, ".agents", "state", "continuity", "diagnostics.jsonl"));
+  assert.equal(diagnostics.at(-1).sessionId, "codex-session-z");
+  assert.equal(diagnostics.at(-1).harness, "codex");
+  assert.equal(diagnostics.at(-1).event, "PreCompact");
+});
+
 test("checkpoint schema rejects stale timestamps, unsupported enums, and heading reordering", (t) => {
   const root = workspace(t);
   const { config } = ensureConfig(root);

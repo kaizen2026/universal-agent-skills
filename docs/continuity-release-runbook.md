@@ -9,7 +9,10 @@ This runbook closes the implementation boundary for the continuity tickets. The 
 3. Work-item capsules, lifecycle events, merge proposals, checkpoint history, telemetry sessions, and degraded diagnostics are bounded by migrated retention settings.
 4. Codex and Claude `PreCompact`, `PostCompact`, and compact-caused `SessionStart` events use the same session-bound, idempotent event processor.
 5. `resume --input <path>` is the only path that reads legacy workspace checkpoints; normal resume resolves an explicit work item or session binding.
-6. Adapter removal restores only captured values and never removes unrelated user configuration.
+6. `import-legacy-checkpoint --work-item <id>` is the only path that turns a legacy checkpoint or incoming handoff into capsule content; it requires the explicit Work Item ID, records import provenance, appends to existing binding decisions, and becomes a merge proposal on a stale revision. Nothing bulk-migrates; source files are left in place.
+7. `handoff --work-item <id>` exports the capsule as a portable checkpoint document that the receiver inspects with `resume --input` and adopts with `import-legacy-checkpoint`; `--input` still exports a legacy checkpoint.
+8. Adapter removal restores only captured values and never removes unrelated user configuration; `status` is read-only and reports non-managed handlers with remediation guidance instead of touching them.
+9. The Claude session-durability plugin (kaizen2026/claude-agent-skills) delegates to this runtime and checks `HOOK_CONTRACT` (`continuity-v2`) before doing so; bump that constant only with a coordinated plugin release.
 
 ## External acceptance boundary
 

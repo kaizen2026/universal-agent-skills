@@ -36,6 +36,8 @@ Locate `scripts/universal-agent-skills.mjs` relative to this skill and run its s
 - Produce the same result on repeated setup
 - Use commands and paths that work on Windows and POSIX systems
 - Install Codex `PreCompact`, `PostCompact`, and `SessionStart` handlers that record one normalized event per lifecycle transition, reconcile only the work item bound to the incoming Codex session, and inject its redacted capsule once after compaction within the configured budget
+- Install the same three handlers for Claude Code through the same shared lifecycle, configuring the reported model window and the host-controlled compact-trigger percentage as separate controls and never inventing a fallback capacity when the window is unverified
+- Never select a workspace-wide `current.md` or archived checkpoint as capsule content from any hook; a legacy checkpoint is adopted only through the explicit `import-legacy-checkpoint --work-item <id>` command, which tags import provenance and goes through the normal revision check
 
 Write or update the repository's `## Agent skills` guidance and `docs/agents/` files without replacing surrounding user content. Preserve existing tracker and domain choices on repeated runs unless the user asked to change them.
 
@@ -45,6 +47,8 @@ Run runtime status and adapter verification. Report each host as `Configured`, `
 
 Verify the managed entries actually exist; do not trust reversal state alone. When setup used a sub-200k context window, retain that installed effective threshold in status while labelling the current session window unverified unless it was supplied again. If ignored reversal state is missing but managed entries remain, preserve the configuration and stop for manual recovery rather than guessing an earlier value.
 
-Exercise Codex hooks through the installed wrapper in a temporary repository, including a path containing spaces. Equivalent duplicate deliveries must produce one logical event, one transition, and one injection. Malformed input and storage or reconciliation failures must still return valid hook output and exit successfully so continuity failure cannot stop Codex.
+Exercise Codex and Claude hooks through the installed runtime in a temporary repository, including a path containing spaces. Equivalent duplicate deliveries must produce one logical event, one transition, and one injection. A git HEAD that advanced since the last checkpoint is normal drift: the capsule is still injected and the event records `confirmed-with-drift`. Malformed input and storage failures must still return valid hook output and exit successfully so continuity failure cannot stop either host; each degraded delivery is appended to `diagnostics.jsonl` with its session identity.
+
+`status` never writes local state. Its per-host `duplicateOwnership` field reports how many managed handlers exist per event, flags non-managed handlers for the same event with exact remediation guidance, and leaves those foreign handlers untouched; `remove` only ever strips managed entries and restores captured prior values.
 
 Never claim that a pure `SKILL.md` can force compaction or open a replacement session. Never run a background daemon or launch another agent session silently.

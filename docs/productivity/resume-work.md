@@ -36,7 +36,7 @@ Not automatically. It reruns the smallest relevant safe validation when the old 
 
 **Can an old `current.md` resume itself?**
 
-No. It can be inspected through an explicit input path as inactive legacy evidence, but it cannot activate an objective or be injected into an unbound session.
+No. It can be inspected through an explicit input path as inactive legacy evidence, but it cannot activate an objective or be injected into an unbound session. Continuing it is a deliberate step: activate a Work Item ID, then `import-legacy-checkpoint --work-item <id> --input <path>`, which records where the content came from.
 
 ## It's working if
 

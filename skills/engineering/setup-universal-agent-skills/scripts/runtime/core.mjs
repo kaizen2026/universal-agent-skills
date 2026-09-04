@@ -57,6 +57,33 @@ export const REQUIRED_HEADINGS = Object.freeze([
   "Suggested skills and resume instructions",
 ]);
 
+// Default section text the runtime writes when it has nothing better. Both the capsule and
+// the legacy checkpoint use these, and the importer/exporter treat them as "empty" so a
+// placeholder never overwrites real content on the other side of a handoff.
+const CHECKPOINT_DEFAULTS = Object.freeze({
+  objective: "Not captured automatically. Invoke /checkpoint-work to record the objective and success criteria.",
+  phase: "Automatic lifecycle checkpoint; phase detail was not available to the hook.",
+  decisions: "No decision detail was supplied to the runtime.",
+  completed: "No completion or validation detail was supplied to the runtime.",
+  pointers: "No pointers were supplied to the runtime.",
+  risks: "Reconcile this automatic checkpoint against the repository before continuing.",
+  next: "Invoke /resume-work, reconcile current state, and replace this automatic checkpoint with a phase-aware checkpoint.",
+  skills: "Use /resume-work. Load other skills only after reconciliation confirms they still fit.",
+});
+const CAPSULE_PLACEHOLDER = "Not recorded yet.";
+const CAPSULE_NEXT_PLACEHOLDER = "Record one concrete next action.";
+const HANDOFF_PLACEHOLDER = "Not recorded.";
+const PLACEHOLDER_TEXT = new Set([...Object.values(CHECKPOINT_DEFAULTS), CAPSULE_PLACEHOLDER, CAPSULE_NEXT_PLACEHOLDER, HANDOFF_PLACEHOLDER]);
+// Markers the capsule handoff exporter writes and the importer recognises, so the runtime's
+// own portable format round-trips its own schema instead of degrading it hop by hop.
+const HANDOFF_SUCCESS_CRITERIA_MARKER = "**Success criteria**";
+const HANDOFF_RESUME_INSTRUCTIONS = "Use /resume-work to reconcile this handoff against the destination";
+
+function meaningful(text) {
+  const trimmed = String(text || "").trim();
+  return trimmed && !PLACEHOLDER_TEXT.has(trimmed) ? trimmed : "";
+}
+
 const ALLOWED_HARNESSES = new Set(["codex", "claude", "cursor", "copilot", "antigravity", "other"]);
 const ALLOWED_EVENTS = new Set(["phase-boundary", "decision", "pre-compact", "interruption", "manual", "threshold-warning", "handoff"]);
 const ALLOWED_STATUSES = new Set(["in-progress", "blocked", "ready-for-review", "complete"]);
@@ -159,7 +186,7 @@ export function validateConfig(config) {
   }
   validatePolicy(config.policy);
   if (config.frontendDesignVariants !== 3) {
-    throw new Error("frontendDesignVariants must be exactly 3 in schema version 1");
+    throw new Error(`frontendDesignVariants must be exactly 3 in schema version ${SCHEMA_VERSION}`);
   }
   if (typeof config.phaseBoundaryCheckpointing !== "boolean") {
     throw new Error("phaseBoundaryCheckpointing must be a boolean");
@@ -373,19 +400,19 @@ validationTimestamp: ${fields.completed ? now : "unavailable"}
 
 ## Objective and success criteria
 
-${value("objective", "Not captured automatically. Invoke /checkpoint-work to record the objective and success criteria.")}
+${value("objective", CHECKPOINT_DEFAULTS.objective)}
 
 ## Current phase and completion status
 
-${value("phase", "Automatic lifecycle checkpoint; phase detail was not available to the hook.")}
+${value("phase", CHECKPOINT_DEFAULTS.phase)}
 
 ## Decisions and rejected alternatives
 
-${value("decisions", "No decision detail was supplied to the runtime.")}
+${value("decisions", CHECKPOINT_DEFAULTS.decisions)}
 
 ## Completed work and validation
 
-${value("completed", "No completion or validation detail was supplied to the runtime.")}
+${value("completed", CHECKPOINT_DEFAULTS.completed)}
 
 ## Dirty working tree
 
@@ -393,19 +420,19 @@ ${formatDirty(git)}
 
 ## Pointers
 
-${value("pointers", "No pointers were supplied to the runtime.")}
+${value("pointers", CHECKPOINT_DEFAULTS.pointers)}
 
 ## Remaining risks and blockers
 
-${value("risks", "Reconcile this automatic checkpoint against the repository before continuing.")}
+${value("risks", CHECKPOINT_DEFAULTS.risks)}
 
 ## Next action
 
-${value("next", "Invoke /resume-work, reconcile current state, and replace this automatic checkpoint with a phase-aware checkpoint.")}
+${value("next", CHECKPOINT_DEFAULTS.next)}
 
 ## Suggested skills and resume instructions
 
-${value("skills", "Use /resume-work. Load other skills only after reconciliation confirms they still fit.")}
+${value("skills", CHECKPOINT_DEFAULTS.skills)}
 `;
 }
 
@@ -839,7 +866,7 @@ function acquireWorkItemLock(paths, timeoutMs) {
         return {
           ok: false,
           reason: "lock-unavailable",
-          message: "Work-item update lock timed out. The lock was retained; verify its owner is no longer running before removing it manually.",
+          message: `Work-item update lock timed out at ${paths.lock}. The lock was retained; inspect its owner.json, verify that process is no longer running, and only then remove the lock directory manually.`,
         };
       }
       sleepSync(Math.min(WORK_ITEM_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
@@ -927,7 +954,7 @@ export function reconcileWorkItem({ project, config, workItemId, harness, sessio
   const table = claims.map((claim) => `| ${escapeTable(claim.item)} | ${claim.status} | ${escapeTable(claim.detail)} |`).join("\n");
   const ok = !claims.some((claim) => claim.status === "Changed" || claim.status === "Missing");
   const report = `# Work-Item Capsule resume\n\nResolution: \`${resolved.resolution}\`\n\nWork Item: \`${resolved.workItemId}\`\n\nCapsule revision: ${validation.metadata.revision}\n\n| Claim | Status | Evidence |\n| --- | --- | --- |\n${table}\n\n## Reconciled capsule\n\n${document}`;
-  return { ...resolved, ok, document, validation, claims, report, revision: Number(validation.metadata.revision) };
+  return { ...resolved, ok, document, validation, claims, report, revision: Number(validation.metadata.revision), git };
 }
 
 function buildCapsule({ project, workItemId, revision, harness, sessionId, fields, existing }) {
@@ -935,7 +962,7 @@ function buildCapsule({ project, workItemId, revision, harness, sessionId, field
   const prior = existing || "";
   const body = CAPSULE_HEADINGS.map(([field, heading]) => {
     const previous = prior ? extractSection(prior, heading) : "";
-    const fallback = field === "next" ? "Record one concrete next action." : "Not recorded yet.";
+    const fallback = field === "next" ? CAPSULE_NEXT_PLACEHOLDER : CAPSULE_PLACEHOLDER;
     return `## ${heading}\n\n${redactSensitive(fields[field] || previous || fallback)}`;
   }).join("\n\n");
   return `---\nschemaVersion: ${CAPSULE_SCHEMA_VERSION}\nworkItemId: ${workItemId}\nrevision: ${revision}\nupdatedAt: ${new Date().toISOString()}\nupdatedByHarness: ${safeScalar(harness)}\nupdatedBySession: ${safeScalar(sessionId)}\ngitHead: ${safeScalar(git.head)}\n---\n\n# Work-Item Capsule\n\n${body}\n`;
@@ -1116,27 +1143,34 @@ export function importLegacyCheckpointIntoCapsule({
   // note is appended to them instead of silently replacing them.
   const resolved = resolveActiveWorkItem({ project, config, workItemId, harness, sessionId });
   const existingDecisions = resolved.ok && existsSync(resolved.paths.capsule)
-    ? extractSection(readFileSync(resolved.paths.capsule, "utf8"), "Binding decisions")
+    ? meaningful(extractSection(readFileSync(resolved.paths.capsule, "utf8"), "Binding decisions"))
     : "";
-  const objective = extractSection(document, "Objective and success criteria");
-  const suggestedSkills = extractSection(document, "Suggested skills and resume instructions");
-  const next = [extractSection(document, "Next action"), suggestedSkills && `Suggested skills/resume instructions: ${suggestedSkills}`]
+  // Placeholder text (the runtime's own defaults in either schema) reads as empty, so an
+  // absent section keeps whatever the target capsule already records.
+  const read = (heading) => meaningful(extractSection(document, heading));
+  // A hand-written legacy checkpoint bundles objective and success criteria into one section
+  // with no way to split them; a capsule handoff marks the boundary, so honour it when present.
+  const objectiveSection = read("Objective and success criteria");
+  const markerIndex = objectiveSection.indexOf(HANDOFF_SUCCESS_CRITERIA_MARKER);
+  const objective = markerIndex >= 0 ? meaningful(objectiveSection.slice(0, markerIndex)) : objectiveSection;
+  const successCriteria = markerIndex >= 0 ? meaningful(objectiveSection.slice(markerIndex + HANDOFF_SUCCESS_CRITERIA_MARKER.length)) : "";
+  // The exporter's own resume instructions are routing boilerplate, not a next action.
+  const suggestedSkillsSection = read("Suggested skills and resume instructions");
+  const suggestedSkills = suggestedSkillsSection.startsWith(HANDOFF_RESUME_INSTRUCTIONS) ? "" : suggestedSkillsSection;
+  const next = [read("Next action"), suggestedSkills && `Suggested skills/resume instructions: ${suggestedSkills}`]
     .filter(Boolean)
     .join("\n\n");
   const fields = {
-    // The legacy checkpoint bundles objective and success criteria into one section with no
-    // way to split them; only populate objective from it and leave successCriteria alone
-    // (falls back to whatever the capsule already has) rather than duplicating the same text
-    // under both headings.
     objective: objective || undefined,
-    phase: extractSection(document, "Current phase and completion status") || undefined,
-    decisions: [provenance, existingDecisions, extractSection(document, "Decisions and rejected alternatives")]
+    successCriteria: successCriteria || undefined,
+    phase: read("Current phase and completion status") || undefined,
+    decisions: [provenance, existingDecisions, read("Decisions and rejected alternatives")]
       .filter(Boolean)
       .join("\n\n"),
-    validation: extractSection(document, "Completed work and validation") || undefined,
-    blockers: extractSection(document, "Remaining risks and blockers") || undefined,
+    validation: read("Completed work and validation") || undefined,
+    blockers: read("Remaining risks and blockers") || undefined,
     next: next || undefined,
-    pointers: extractSection(document, "Pointers") || undefined,
+    pointers: read("Pointers") || undefined,
   };
   return saveWorkItemCapsule({ project, config, workItemId, harness, sessionId, expectedRevision, lockTimeoutMs, fields });
 }
@@ -1163,34 +1197,44 @@ function escapeTable(value) {
   return String(value).replaceAll("|", "\\|").replace(/\r?\n/g, "<br>");
 }
 
-export function exportHandoff({ project, config, inputPath, outputPath, destination = "another session" }) {
-  const reconciliation = reconcileCheckpoint(project, config, inputPath);
-  if (!reconciliation.document) throw new Error(reconciliation.report);
-  if (!reconciliation.schemaValid) throw new Error(`Cannot export an invalid checkpoint: ${reconciliation.report}`);
+// Exports a portable handoff in the checkpoint document schema, sourced either from a
+// Work-Item Capsule (explicit workItemId, or the harness/session binding) or, only when
+// neither is given, from a legacy workspace-wide checkpoint (`inputPath` or current.md).
+// Emitting the checkpoint schema in both cases keeps arrival uniform: the receiver can
+// inspect it with `resume --input` and adopt it with `import-legacy-checkpoint --input`.
+export function exportHandoff({ project, config, inputPath, outputPath, destination = "another session", workItemId, harness, sessionId }) {
+  if (inputPath && (workItemId || harness || sessionId)) {
+    throw new Error("handoff takes either --input <legacy-path> or a capsule selector (--work-item, or --harness with --session), not both.");
+  }
+  if (!workItemId && Boolean(harness) !== Boolean(sessionId)) {
+    throw new Error("handoff needs both --harness and --session to resolve a session-bound capsule.");
+  }
   const timestamp = new Date().toISOString();
-  const sourceMetadata = parseFrontmatter(reconciliation.document);
   const output = outputPath
     ? resolveProjectPath(project, outputPath)
     : join(tmpdir(), `universal-agent-skills-handoff-${archiveStamp(timestamp)}.md`);
-  const reconciliationTable = reconciliation.claims
+  const source = workItemId || sessionId
+    ? capsuleHandoffSource({ project, config, workItemId, harness, sessionId })
+    : legacyHandoffSource({ project, config, inputPath });
+  const reconciliationTable = source.claims
     .map((claim) => `| ${escapeTable(claim.item)} | ${claim.status} | ${escapeTable(claim.detail)} |`)
     .join("\n");
   const body = `---
 schemaVersion: ${CHECKPOINT_SCHEMA_VERSION}
 timestamp: ${timestamp}
-originatingHarness: ${safeScalar(sourceMetadata.originatingHarness || "other")}
+originatingHarness: ${safeScalar(source.originatingHarness || "other")}
 event: handoff
-status: ${safeScalar(sourceMetadata.status || "in-progress")}
-gitHead: ${safeScalar(sourceMetadata.gitHead || "unavailable")}
-validationGitHead: ${safeScalar(sourceMetadata.validationGitHead || sourceMetadata.gitHead || "unavailable")}
-validationTimestamp: ${sourceMetadata.validationTimestamp || sourceMetadata.timestamp || "unavailable"}
-sourceCheckpointTimestamp: ${sourceMetadata.timestamp || "unavailable"}
-destination: ${safeScalar(destination)}
+status: ${safeScalar(source.status || "in-progress")}
+gitHead: ${safeScalar(source.gitHead || "unavailable")}
+validationGitHead: ${safeScalar(source.validationGitHead || source.gitHead || "unavailable")}
+validationTimestamp: ${source.validationTimestamp || source.sourceTimestamp || "unavailable"}
+sourceCheckpointTimestamp: ${source.sourceTimestamp || "unavailable"}
+${source.workItemId ? `sourceWorkItemId: ${source.workItemId}\nsourceCapsuleRevision: ${source.revision}\n` : ""}destination: ${safeScalar(destination)}
 ---
 
 # Portable work handoff
 
-> Exported from a local continuity checkpoint. Reconcile every claim in the destination workspace before acting. Gitignored and absolute local pointers may not travel with this file.
+> ${source.origin} Reconcile every claim in the destination workspace before acting. Gitignored and absolute local pointers may not travel with this file.
 
 ## Export-time reconciliation
 
@@ -1198,10 +1242,94 @@ destination: ${safeScalar(destination)}
 | --- | --- | --- |
 ${reconciliationTable}
 
-${reconciliation.document.replace(/^---[\s\S]*?---\s*/, "")}`;
+${source.body}`;
   const portable = redactPortable(body, project);
+  const validation = validateCheckpoint(portable);
+  if (!validation.valid) throw new Error(`Cannot export an invalid handoff: ${validation.errors.join("; ")}`);
   writeTextAtomic(output, portable);
-  return { path: output, document: portable };
+  return { path: output, document: portable, workItemId: source.workItemId || null, revision: source.revision ?? null };
+}
+
+function legacyHandoffSource({ project, config, inputPath }) {
+  const reconciliation = reconcileCheckpoint(project, config, inputPath);
+  if (!reconciliation.document) throw new Error(reconciliation.report);
+  if (!reconciliation.schemaValid) throw new Error(`Cannot export an invalid checkpoint: ${reconciliation.report}`);
+  const metadata = parseFrontmatter(reconciliation.document);
+  return {
+    origin: "Exported from a local continuity checkpoint.",
+    claims: reconciliation.claims,
+    originatingHarness: metadata.originatingHarness,
+    status: metadata.status,
+    gitHead: metadata.gitHead,
+    validationGitHead: metadata.validationGitHead,
+    validationTimestamp: metadata.validationTimestamp,
+    sourceTimestamp: metadata.timestamp,
+    body: reconciliation.document.replace(/^---[\s\S]*?---\s*/, ""),
+  };
+}
+
+function capsuleHandoffSource({ project, config, workItemId, harness, sessionId }) {
+  const reconciliation = reconcileWorkItem({ project, config, workItemId, harness, sessionId });
+  if (!reconciliation.document) throw new Error(reconciliation.report);
+  const metadata = reconciliation.validation.metadata;
+  // Placeholder sections are exported as the handoff placeholder so the importer on the
+  // other side leaves the destination's own content alone instead of overwriting it.
+  const show = (heading) => meaningful(extractSection(reconciliation.document, heading)) || HANDOFF_PLACEHOLDER;
+  const validation = meaningful(extractSection(reconciliation.document, "Validation state"));
+  const body = `## Objective and success criteria
+
+${show("Objective")}
+
+${HANDOFF_SUCCESS_CRITERIA_MARKER}
+
+${show("Success criteria")}
+
+## Current phase and completion status
+
+${show("Current phase")}
+
+## Decisions and rejected alternatives
+
+${show("Binding decisions")}
+
+## Completed work and validation
+
+${show("Validation state")}
+
+## Dirty working tree
+
+${formatDirty(reconciliation.git)}
+
+## Pointers
+
+${show("Authority pointers")}
+
+## Remaining risks and blockers
+
+${show("Blockers")}
+
+## Next action
+
+${show("Next action")}
+
+## Suggested skills and resume instructions
+
+${HANDOFF_RESUME_INSTRUCTIONS} (\`resume --input <this file>\`). To continue it as a Work-Item Capsule there, activate a Work Item ID and run \`import-legacy-checkpoint --work-item <id> --input <this file> --expected-revision <n>\`; the import is explicit and never automatic.
+`;
+  return {
+    origin: `Exported from Work-Item Capsule ${reconciliation.workItemId} r${metadata.revision}.`,
+    claims: reconciliation.claims,
+    workItemId: reconciliation.workItemId,
+    revision: reconciliation.revision,
+    originatingHarness: metadata.updatedByHarness,
+    status: "in-progress",
+    gitHead: metadata.gitHead,
+    // A capsule with no recorded validation must not travel as validation evidence for HEAD.
+    validationGitHead: validation ? metadata.gitHead : "unavailable",
+    validationTimestamp: validation ? metadata.updatedAt : "unavailable",
+    sourceTimestamp: metadata.updatedAt,
+    body,
+  };
 }
 
 export function removeFileIfEmptyJson(path, wasCreated) {

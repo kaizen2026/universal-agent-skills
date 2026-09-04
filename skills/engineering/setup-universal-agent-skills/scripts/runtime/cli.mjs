@@ -294,8 +294,17 @@ function resume(project, args, io) {
 
 function handoff(project, args, io) {
   const { config } = loadConfig(project);
-  const result = exportHandoff({ project, config, inputPath: args.input, outputPath: args.output, destination: args.destination || "another session" });
-  io.write(JSON.stringify({ ok: true, path: result.path }, null, 2));
+  const result = exportHandoff({
+    project,
+    config,
+    inputPath: args.input,
+    outputPath: args.output,
+    destination: args.destination || "another session",
+    workItemId: args["work-item"],
+    harness: args.harness,
+    sessionId: args.session,
+  });
+  io.write(JSON.stringify({ ok: true, path: result.path, workItemId: result.workItemId, revision: result.revision }, null, 2));
   return result;
 }
 
@@ -303,18 +312,14 @@ function hook(project, rawArgs, args, io) {
   const host = rawArgs[0];
   const event = rawArgs[1];
   if (!HOSTS.includes(host)) throw new Error(`Unknown hook host: ${host}`);
-  if (host === "codex") {
+  const spec = HOST_HOOK_SPECS[host];
+  if (spec) {
+    let input = {};
     try {
-      return codexHook(project, event, parseHookInput(io.readStdin()), io);
+      input = parseHookInput(io.readStdin());
+      return lifecycleHook(spec, project, event, input, io);
     } catch (error) {
-      return degradedHook(project, "codex", event, error, io);
-    }
-  }
-  if (host === "claude") {
-    try {
-      return claudeHook(project, event, parseHookInput(io.readStdin()), io);
-    } catch (error) {
-      return degradedHook(project, "claude", event, error, io);
+      return degradedHook(project, host, event, error, io, input);
     }
   }
   const input = safeStdinJson(io.readStdin());
@@ -501,43 +506,94 @@ function numberArg(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
 }
 
-function codexHook(project, event, input, io) {
+const COMPACT_TRIGGERS = new Set(["manual", "auto"]);
+
+// Everything host-specific about the capsule lifecycle lives in one spec per host; the
+// lifecycle itself (kind detection, unbound fallback, idempotent event recording,
+// reconcile-and-inject, duplicate handling) is shared in lifecycleHook so the two hosts
+// cannot silently drift apart again.
+const HOST_HOOK_SPECS = Object.freeze({
+  codex: {
+    harness: "codex",
+    sessionId: (input) => input.session_id,
+    nativeIdentity: (input) => input.turn_id || null,
+    trigger: (input) => input.trigger,
+    // Codex documents turn_id and a manual|auto trigger on compaction events; anything else is malformed.
+    validateCompactionInput: (input, label) => {
+      if (!input.turn_id || !COMPACT_TRIGGERS.has(input.trigger)) throw new Error(`${label} input requires turn_id and a manual or auto trigger.`);
+    },
+    sessionStartSource: (input) => input.source,
+    // A Codex session start that did not follow compaction gets a diagnostic only; nothing is injected.
+    sessionStartWithoutCompaction: ({ input, io }) =>
+      writeSystemMessage(io, `SessionStart source ${input.source || "unknown"} did not follow compaction; no capsule was injected.`),
+  },
+  claude: {
+    harness: "claude",
+    sessionId: (input) => input.session_id || input.sessionId || input.conversation_id || input.conversationId,
+    nativeIdentity: (input) => input.turn_id || input.event_id || input.compaction_id || input.compact_id || input.uuid || input.id || null,
+    trigger: (input) => input.trigger || "auto",
+    validateCompactionInput: () => {},
+    sessionStartSource: (input) => String(input.source || "").toLowerCase(),
+    // Claude's SessionStart output is always the hookSpecificOutput shape, so a plain
+    // startup/resume reports binding status as context instead of a bare system message.
+    sessionStartWithoutCompaction: ({ project, config, event, sessionId, io }) => {
+      const reconciliation = reconcileWorkItem({ project, config, harness: "claude", sessionId });
+      // `document` is present whenever the capsule resolved and validated (drift or not);
+      // a bound-but-invalid capsule has a workItemId and no document, and must say so now
+      // rather than surfacing as a hard error at the next compaction.
+      const context = reconciliation.document
+        ? `Work item ${reconciliation.workItemId} resolved by ${reconciliation.resolution}. Automatic capsule injection is not enabled outside compaction.`
+        : reconciliation.workItemId
+          ? `Work item ${reconciliation.workItemId} is bound to this session but could not be reconciled: ${reconciliation.report}`
+          : `Continuity state was not activated. ${reconciliation.report}`;
+      return writeHookOutput("claude", event, context, "sessionstart", io);
+    },
+  },
+});
+
+function lifecycleHook(spec, project, event, input, io) {
   const { config } = ensureConfig(project);
+  const { harness } = spec;
   const normalized = String(event || input.hook_event_name || "").toLowerCase();
-  const sessionId = input.session_id;
+  const sessionId = spec.sessionId(input);
   let kind;
   let transition;
   if (normalized.includes("precompact")) {
-    if (!input.turn_id || !new Set(["manual", "auto"]).has(input.trigger)) throw new Error("PreCompact input requires turn_id and a manual or auto trigger.");
+    spec.validateCompactionInput(input, "PreCompact");
     kind = "pre-compact";
     transition = "checkpoint-recorded";
   } else if (normalized.includes("postcompact")) {
-    if (!input.turn_id || !new Set(["manual", "auto"]).has(input.trigger)) throw new Error("PostCompact input requires turn_id and a manual or auto trigger.");
+    spec.validateCompactionInput(input, "PostCompact");
     kind = "post-compact";
     transition = "compaction-recorded";
   } else if (normalized.includes("sessionstart")) {
-    if (input.source !== "compact") {
-      return writeCodexDiagnostic(io, `SessionStart source ${input.source || "unknown"} did not follow compaction; no capsule was injected.`);
+    if (spec.sessionStartSource(input) !== "compact") {
+      return spec.sessionStartWithoutCompaction({ project, config, event, input, sessionId, io });
     }
     kind = "session-start-compact";
   } else {
     io.write("{}");
     return {};
   }
+  // With no session there is nothing to bind to; keep the legacy workspace checkpoint's
+  // provenance current on pre-compact (expand phase) and report rather than fail.
+  const preserveLegacyProvenance = () => {
+    if (kind === "pre-compact") saveCheckpoint({ project, config, harness, event: kind, fields: { preserveClaims: true } });
+  };
   if (!sessionId) {
-    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "codex", event: kind, fields: { preserveClaims: true } });
-    return writeCodexDiagnostic(io, "No active work item. Supply --work-item or a bound --harness and --session.");
+    preserveLegacyProvenance();
+    return writeSystemMessage(io, "No active work item. Supply --work-item or a bound --harness and --session.");
   }
   const result = processContinuityEvent({
     project,
     config,
-    harness: "codex",
+    harness,
     sessionId,
     kind,
-    input,
+    input: { ...input, turn_id: spec.nativeIdentity(input), trigger: spec.trigger(input) },
     action: kind === "session-start-compact"
       ? () => {
-          const reconciliation = reconcileWorkItem({ project, config, harness: "codex", sessionId });
+          const reconciliation = reconcileWorkItem({ project, config, harness, sessionId });
           if (!reconciliation.document) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
           const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
           return {
@@ -550,23 +606,16 @@ function codexHook(project, event, input, io) {
       : () => ({ transition, reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
   });
   if (!result.ok) {
-    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "codex", event: kind, fields: { preserveClaims: true } });
-    return writeCodexDiagnostic(io, result.message || result.reason);
+    preserveLegacyProvenance();
+    return writeSystemMessage(io, result.message || result.reason);
   }
-  if (result.duplicate) {
-    return writeCodexDiagnostic(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
-  }
+  if (result.duplicate) return writeSystemMessage(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
   if (kind === "session-start-compact") {
-    const output = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: result.additionalContext,
-      },
-    };
+    const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.additionalContext } };
     io.write(JSON.stringify(output));
     return output;
   }
-  return writeCodexDiagnostic(io, `${event} ${transition} for work item ${result.workItemId}.`);
+  return writeSystemMessage(io, `${event} ${transition} for work item ${result.workItemId}.`);
 }
 
 function parseHookInput(text) {
@@ -576,75 +625,12 @@ function parseHookInput(text) {
   return value;
 }
 
-function claudeHook(project, event, input, io) {
-  const { config } = ensureConfig(project);
-  const normalized = String(event || input.hook_event_name || "").toLowerCase();
-  const sessionId = input.session_id || input.sessionId || input.conversation_id || input.conversationId;
-  const nativeIdentity = input.turn_id || input.event_id || input.compaction_id || input.compact_id || input.uuid || input.id || null;
-  let kind;
-  let transition;
-  if (normalized.includes("precompact")) {
-    kind = "pre-compact";
-    transition = "checkpoint-recorded";
-  } else if (normalized.includes("postcompact")) {
-    kind = "post-compact";
-    transition = "compaction-recorded";
-  } else if (normalized.includes("sessionstart")) {
-    if (String(input.source || "").toLowerCase() !== "compact") {
-      const reconciliation = reconcileWorkItem({ project, config, harness: "claude", sessionId });
-      const context = reconciliation.workItemId
-        ? `Work item ${reconciliation.workItemId} resolved by ${reconciliation.resolution}. Automatic capsule injection is not enabled outside compaction.`
-        : `Continuity state was not activated. ${reconciliation.report}`;
-      return writeHookOutput("claude", event, context, "sessionstart", io);
-    }
-    kind = "session-start-compact";
-  } else {
-    io.write("{}");
-    return {};
-  }
-  if (!sessionId) {
-    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "claude", event: kind, fields: { preserveClaims: true } });
-    return writeClaudeDiagnostic(io, "No active work item. Supply --work-item or a bound --harness and --session.");
-  }
-  const result = processContinuityEvent({
-    project,
-    config,
-    harness: "claude",
-    sessionId,
-    kind,
-    input: { ...input, turn_id: nativeIdentity, trigger: input.trigger || "auto" },
-    action: kind === "session-start-compact"
-      ? () => {
-          const reconciliation = reconcileWorkItem({ project, config, harness: "claude", sessionId });
-          if (!reconciliation.document) throw new Error(`Capsule reconciliation failed. ${reconciliation.report}`);
-          const injection = buildCapsuleInjection(reconciliation.document, config.policy.capsuleBudgetTokens);
-          return {
-            transition: "reconciled-and-injected",
-            reconciliation: reconciliation.ok ? "confirmed" : "confirmed-with-drift",
-            injectedTokenEstimate: injection.estimatedTokens,
-            additionalContext: injection.text,
-          };
-        }
-      : () => ({ transition, reconciliation: "not-applicable", injectedTokenEstimate: 0 }),
-  });
-  if (!result.ok) {
-    if (kind === "pre-compact") saveCheckpoint({ project, config, harness: "claude", event: kind, fields: { preserveClaims: true } });
-    return writeClaudeDiagnostic(io, result.message || result.reason);
-  }
-  if (result.duplicate) return writeClaudeDiagnostic(io, `Equivalent duplicate ${event} delivery ignored for work item ${result.workItemId}.`);
-  if (kind === "session-start-compact") {
-    const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.additionalContext } };
-    io.write(JSON.stringify(output));
-    return output;
-  }
-  return writeClaudeDiagnostic(io, `${event} ${transition} for work item ${result.workItemId}.`);
-}
-
-function degradedHook(project, harness, event, error, io) {
+function degradedHook(project, harness, event, error, io, input = {}) {
   const message = `Continuity degraded; ${harness} lifecycle continues. ${redactSensitive(error?.message || error)}`;
   try {
     const { config } = ensureConfig(project);
-    recordContinuityDiagnostic({ project, config, harness, event, message });
+    const sessionId = HOST_HOOK_SPECS[harness]?.sessionId(input) ?? null;
+    recordContinuityDiagnostic({ project, config, harness, sessionId, event, message, input });
   } catch {
     // Hook failure must remain fail-open even when local diagnostics cannot be persisted.
   }
@@ -652,13 +638,7 @@ function degradedHook(project, harness, event, error, io) {
   return { ok: false, degraded: true, message };
 }
 
-function writeClaudeDiagnostic(io, message) {
-  const output = { systemMessage: redactSensitive(message || "No active work item.") };
-  io.write(JSON.stringify(output));
-  return output;
-}
-
-function writeCodexDiagnostic(io, message) {
+function writeSystemMessage(io, message) {
   const output = { systemMessage: redactSensitive(message || "No active work item.") };
   io.write(JSON.stringify(output));
   return output;
@@ -710,9 +690,11 @@ Commands:
   threshold --context-window <tokens>
   activate --work-item <id> --harness <name> --session <id>
   checkpoint --expected-revision <n> [--work-item <id> | --harness <name> --session <id>] [capsule fields]
+  import-legacy-checkpoint --work-item <id> --expected-revision <n> [--input <legacy-path>] [--harness <name> --session <id>]
   validate [--input <path>]
   resume [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>]
-  handoff [--input <path>] [--output <path>] [--destination <text>]
+  handoff [--work-item <id> | --harness <name> --session <id> | --input <legacy-path>] [--output <path>] [--destination <text>]
+  hook <codex|claude|cursor|copilot|antigravity> <Event> --project <path>  # reads the host's hook JSON from stdin
   telemetry --harness <name> --tokens <count> --context-window <tokens>
   statusline [--harness antigravity|claude] [--project <path>]  # reads status-line JSON from stdin
 

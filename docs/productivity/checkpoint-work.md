@@ -42,7 +42,7 @@ Only if the environment preserves local state. A gitignored checkpoint disappear
 
 **What happened to `current.md`?**
 
-Existing workspace-wide checkpoints remain readable as explicit legacy evidence. They are never selected automatically or treated as an active Work-Item Capsule.
+Existing workspace-wide checkpoints remain readable as explicit legacy evidence. They are never selected automatically or treated as an active Work-Item Capsule. If one still describes the work you are continuing, `import-legacy-checkpoint --work-item <id>` adopts it deliberately: the import is tagged with its source, keeps the capsule's existing binding decisions, and becomes a merge proposal if the capsule has newer work. The original file stays where it is.
 
 **What if another agent checkpoints first?**
 

@@ -21,7 +21,9 @@ Codex accounting has two explicit paths:
 | Context capacity only | Use safe total-token accounting. |
 | Context capacity and a project-local observation matching the active model, capacity, and prefix size | Prefix-excluding accounting may be selected while preserving the same reserve, with the evidence source reported. |
 
-Its lifecycle adapter records equivalent hook deliveries once and, after compaction, reconciles and injects only the capsule bound to that Codex session.
+The Codex and Claude Code lifecycle adapters share one contract: each records equivalent hook deliveries once and, after compaction, reconciles and injects only the capsule bound to that session. Claude's reported model window and its host-controlled compact-trigger percentage are configured as separate controls; when the window is unverified, no fallback capacity is invented.
+
+No hook ever adopts a workspace-wide `current.md` or archived checkpoint as capsule content. The explicit `import-legacy-checkpoint --work-item <id>` command is the only path from a legacy checkpoint (or an incoming portable handoff) into a capsule: it tags the result with import provenance and, if the target capsule has moved on, records a merge proposal instead of overwriting it.
 
 Schema-v1 configuration is migrated compatibly: existing and user-defined fields are retained, while the new policy becomes authoritative. The old literal threshold remains migration evidence rather than a cross-host control.
 
@@ -35,9 +37,13 @@ No. It merges its own hook entries, preserves unrelated keys and hooks, records 
 
 No. Codex exposes a token threshold. Claude exposes a compaction calculation window and a lowering percentage, Cursor and Copilot retain native thresholds, Antigravity CLI offers watcher telemetry, and Antigravity IDE remains manual.
 
-**Can a broken continuity hook stop Codex?**
+**Can a broken continuity hook stop Codex or Claude?**
 
-No. Managed Codex hooks return valid output and allow the lifecycle to continue when input is malformed or continuity storage and reconciliation fail. The diagnostic replaces capsule injection until the underlying state is healthy.
+No. Managed hooks on both hosts return valid output and allow the lifecycle to continue when input is malformed or continuity storage fails; each degraded delivery is recorded in `diagnostics.jsonl` with its session identity. A git HEAD that moved since the last checkpoint is ordinary drift, not a failure, so the capsule is still injected.
+
+**What does `status` do about hooks I didn't install?**
+
+It reports them and leaves them alone. `status` is read-only: it counts managed handlers per event, flags a non-managed handler registered for the same event with the file to edit, and never removes anything. `remove` strips only managed entries.
 
 **Does a global `skills` CLI copy prove discovery?**
 
@@ -46,7 +52,8 @@ No. Current Codex and Antigravity documented global paths can differ from instal
 ## It's working if
 
 - Re-running setup produces no duplicate hooks.
-- Repeated Codex lifecycle deliveries produce one event and one capsule injection for the bound work item.
+- Repeated Codex or Claude lifecycle deliveries produce one event and one capsule injection for the bound work item.
+- `status` reports every host's threshold source, hook contract, and duplicate-ownership diagnostics without modifying a single file.
 - Removal restores related prior values and leaves unrelated configuration intact.
 - The capability report names every limitation and trust step.
 
