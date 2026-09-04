@@ -21,6 +21,8 @@ The following evidence cannot be produced by this repository alone and must be c
 - Claude plugin integration (#9): install the thin external plugin/adapter, run a real Claude session, and attach the emitted hook payloads and status output.
 - Native Codex and Claude triple-compaction acceptance (#11 and #12): perform three real compaction cycles in each host and retain the event ledger, duplicate-delivery result, capsule revision, and injected-context evidence.
 
+Run [`scripts/native-acceptance-wizard.sh`](../scripts/native-acceptance-wizard.sh) to set this up: it creates three disposable fixtures under a workspace outside this repo (never `C:\SkillTest`, `tdg-movingforward/company-platform`, or any other production project), installs a cost-conscious adapter config in each (a deliberately small context window so the compact threshold is reachable without heavy token spend), and binds each to a real Codex or Claude session. It hands off the actual compaction-triggering work — and the concurrent-update, stale-proposal, and fail-open-injection experiments the acceptance criteria require — as an explicit runbook printed at its final stage, since that work is real and open-ended and no script can walk through it. It does not itself close #9/#11/#12; someone still has to run the live sessions and write up the evidence.
+
 The repository runtime must fail open when a host omits lifecycle telemetry. A degraded invocation is still recorded in `diagnostics.jsonl` when local state is writable.
 
 ## Release checklist

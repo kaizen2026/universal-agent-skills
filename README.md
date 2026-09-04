@@ -134,6 +134,8 @@ npm run test:installer
 
 CI validates skill structure and discovery, manifest consistency, runtime bundling, checkpoint schema and redaction, adapter merge/removal fixtures, repeated setup, and Windows/POSIX behavior on Ubuntu and Windows. The `v1.0.0` release workflow is manual and requires the compatibility matrix to be confirmed; source version alone is not a claim that every external host was exercised.
 
+Native Codex and Claude compaction acceptance cannot be produced by CI alone; run [`scripts/native-acceptance-wizard.sh`](./scripts/native-acceptance-wizard.sh) to set up the disposable fixtures and bound sessions, then follow its printed runbook. See [the continuity release runbook](./docs/continuity-release-runbook.md) for the full acceptance boundary.
+
 The validator checks the portable Agent Skills name, description, layout, and resource contract for every promoted skill. A small set of retained upstream skills also carry documented Claude Code invocation fields such as `disable-model-invocation`; those host extensions power the optional plugin and are reported separately from portable metadata.
 
 To incorporate upstream work, fetch `upstream`, review the changes against this derivative's integration points, and preserve upstream commits when merging. Do not squash away attribution.
