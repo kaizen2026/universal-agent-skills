@@ -33,6 +33,8 @@ import {
   thresholdReport,
   validateConfig,
   validateCheckpoint,
+  withTransientWriteRetry,
+  writeTextAtomic,
 } from "../.agents/universal-agent-skills/runtime/core.mjs";
 import {
   adapterStatus,
@@ -634,6 +636,56 @@ test("redaction removes tokens, credentials, email, URL auth, and private keys",
   }
   assert.match(redacted, /REDACTED_TOKEN/);
   assert.match(redacted, /REDACTED_PRIVATE_KEY/);
+});
+
+test("writeTextAtomic survives a real end-to-end write with no injected failures", (t) => {
+  const root = workspace(t, "uas-write-ok-");
+  const target = join(root, "nested", "config.json");
+  writeTextAtomic(target, "hello");
+  assert.equal(readFileSync(target, "utf8"), "hello");
+});
+
+test("a transient Windows-style file lock (EPERM/EBUSY/EACCES) is retried instead of failing the write", () => {
+  for (const code of ["EPERM", "EBUSY", "EACCES"]) {
+    let calls = 0;
+    const result = withTransientWriteRetry(() => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error(`${code}: transient lock`);
+        error.code = code;
+        throw error;
+      }
+      return "ok";
+    });
+    assert.equal(result, "ok");
+    assert.equal(calls, 2);
+  }
+});
+
+test("repeated transient lock failures eventually surface the error instead of retrying forever", () => {
+  let calls = 0;
+  assert.throws(() => {
+    withTransientWriteRetry(() => {
+      calls += 1;
+      const error = new Error("EBUSY: resource busy or locked");
+      error.code = "EBUSY";
+      throw error;
+    });
+  }, /EBUSY/);
+  assert.equal(calls, 4);
+});
+
+test("a non-transient write failure is not retried", () => {
+  let calls = 0;
+  assert.throws(() => {
+    withTransientWriteRetry(() => {
+      calls += 1;
+      const error = new Error("ENOSPC: no space left on device");
+      error.code = "ENOSPC";
+      throw error;
+    });
+  }, /ENOSPC/);
+  assert.equal(calls, 1);
 });
 
 test("cli.mjs re-exports the runtime's HOOK_CONTRACT for external delegating wrappers", () => {

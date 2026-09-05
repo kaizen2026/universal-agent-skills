@@ -111,11 +111,34 @@ export function readJson(path, fallback = {}) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+// Windows Defender / search-indexing / sync-client processes routinely hold a brief,
+// transient lock on a just-created file; retry those specific codes rather than let a
+// normal atomic write fail the whole command for something that clears in milliseconds.
+const TRANSIENT_WRITE_ERROR_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const WRITE_RETRY_ATTEMPTS = 4;
+const WRITE_RETRY_DELAY_MS = 50;
+
+export function withTransientWriteRetry(operation) {
+  for (let attempt = 1; attempt <= WRITE_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!TRANSIENT_WRITE_ERROR_CODES.has(error?.code) || attempt === WRITE_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      sleepSync(WRITE_RETRY_DELAY_MS * attempt);
+    }
+  }
+  return undefined;
+}
+
 export function writeTextAtomic(path, content) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
-  writeFileSync(temporary, content, "utf8");
-  renameSync(temporary, path);
+  withTransientWriteRetry(() => {
+    writeFileSync(temporary, content, "utf8");
+    renameSync(temporary, path);
+  });
 }
 
 export function writeJsonAtomic(path, value) {
