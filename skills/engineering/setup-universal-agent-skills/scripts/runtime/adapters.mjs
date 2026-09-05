@@ -760,35 +760,53 @@ function result(host, paths, threshold, limitation, configured = true) {
   };
 }
 
+// Claude Code merges hooks from both files at runtime, so a foreign handler sitting in the
+// tracked settings.json is just as live as one in settings.local.json — scanning only the
+// latter let a real duplicate-firing bug (a pre-v2 hook script wired in settings.json) go
+// undetected by this exact diagnostic.
 const HOOK_DIAGNOSTIC_PATHS = Object.freeze({
-  codex: ".codex/hooks.json",
-  claude: ".claude/settings.local.json",
+  codex: [".codex/hooks.json"],
+  claude: [".claude/settings.json", ".claude/settings.local.json"],
 });
 
 function managedHookDiagnostics(project, host) {
-  const relativePath = HOOK_DIAGNOSTIC_PATHS[host];
+  const relativePaths = HOOK_DIAGNOSTIC_PATHS[host];
   const empty = { owner: "universal-agent-skills", counts: {}, duplicate: false, confidence: "unverified", unmanaged: {}, remediation: null };
-  if (!relativePath) return empty;
+  if (!relativePaths) return empty;
   try {
-    const hooks = readJson(resolveWithin(project, relativePath), {}).hooks || {};
     const counts = {};
-    const unmanaged = {};
-    for (const [event, entries] of Object.entries(hooks)) {
-      const handlers = (Array.isArray(entries) ? entries : []).flatMap((entry) => (Array.isArray(entry?.hooks) ? entry.hooks : []));
-      counts[event] = handlers.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length;
-      const foreignCount = handlers.length - counts[event];
-      if (foreignCount > 0) unmanaged[event] = foreignCount;
+    const unmanagedByFile = {};
+    for (const relativePath of relativePaths) {
+      const hooks = readJson(resolveWithin(project, relativePath), {}).hooks || {};
+      for (const [event, entries] of Object.entries(hooks)) {
+        const handlers = (Array.isArray(entries) ? entries : []).flatMap((entry) => (Array.isArray(entry?.hooks) ? entry.hooks : []));
+        const managedCount = handlers.filter((item) => JSON.stringify(item).includes(MANAGED_FRAGMENT)).length;
+        counts[event] = (counts[event] || 0) + managedCount;
+        const foreignCount = handlers.length - managedCount;
+        if (foreignCount > 0) {
+          unmanagedByFile[relativePath] ||= {};
+          unmanagedByFile[relativePath][event] = foreignCount;
+        }
+      }
     }
-    const unmanagedEvents = Object.keys(unmanaged);
+    const unmanaged = {};
+    for (const fileUnmanaged of Object.values(unmanagedByFile)) {
+      for (const [event, count] of Object.entries(fileUnmanaged)) {
+        unmanaged[event] = (unmanaged[event] || 0) + count;
+      }
+    }
+    const filesWithUnmanaged = Object.keys(unmanagedByFile);
     return {
       owner: "universal-agent-skills",
       counts,
       duplicate: Object.values(counts).some((count) => count > 1),
       confidence: Object.keys(counts).length > 0 ? "verified" : "unverified",
       unmanaged,
-      remediation: unmanagedEvents.length === 0
+      remediation: filesWithUnmanaged.length === 0
         ? null
-        : `Non-managed hook handler(s) found in ${relativePath} for ${unmanagedEvents.map((event) => `${event} (${unmanaged[event]})`).join(", ")}. `
+        : filesWithUnmanaged
+            .map((relativePath) => `Non-managed hook handler(s) found in ${relativePath} for ${Object.entries(unmanagedByFile[relativePath]).map(([event, count]) => `${event} (${count})`).join(", ")}. `)
+            .join("")
           + "Universal Agent Skills leaves these untouched; remove them from that file by hand if they are unwanted.",
     };
   } catch {

@@ -1547,6 +1547,30 @@ test("status reports exact remediation guidance for a non-managed hook handler w
   assert.equal(json(hooksPath).hooks.PreCompact.some((entry) => entry.hooks.some((h) => h.command === "some-other-tool --checkpoint")), true, "the foreign handler itself must be left untouched");
 });
 
+test("status also catches a foreign Claude hook living in tracked settings.json, not just settings.local.json", (t) => {
+  const root = workspace(t, "uas-claude-tracked-hook-");
+  const { config } = ensureConfig(root);
+  installAdapters({ project: root, config, hosts: ["claude"], contextWindow: 780000 });
+
+  // Claude Code merges hooks from both settings.json (tracked) and settings.local.json
+  // (gitignored); a pre-v2 script wired into the tracked file is just as live as one in
+  // the untracked file this installer actually writes to.
+  const trackedSettingsPath = join(root, ".claude", "settings.json");
+  write(trackedSettingsPath, JSON.stringify({
+    hooks: {
+      PreCompact: [{ matcher: "manual|auto", hooks: [{ type: "command", command: "node", args: [".agents/hooks/smart-zone-hook.mjs", "claude", "PreCompact"] }] }],
+    },
+  }));
+
+  const status = adapterStatus(root).find((item) => item.host === "claude");
+  assert.equal(status.status, "Configured", "a foreign handler in the tracked file must not itself count as configuration drift");
+  assert.equal(status.duplicateOwnership.unmanaged.PreCompact, 1);
+  assert.match(status.duplicateOwnership.remediation, /Non-managed hook handler\(s\) found in \.claude\/settings\.json for PreCompact \(1\)/);
+  assert.match(status.duplicateOwnership.remediation, /remove them from that file by hand/);
+
+  assert.equal(json(trackedSettingsPath).hooks.PreCompact[0].hooks[0].args[0], ".agents/hooks/smart-zone-hook.mjs", "the foreign handler itself must be left untouched");
+});
+
 test("installed Codex adapter resolves configured capacity and reports safe total accounting", (t) => {
   const root = workspace(t, "uas codex policy path with spaces-");
   initGit(root);
