@@ -72,4 +72,8 @@ A description of the things that are out of scope for this spec.
 
 Any further notes about the feature.
 
+## Source References
+
+Link the existing source map/issue, relevant decision tickets, `CONTEXT.md`, ADRs, or approved design contract that materially govern this spec. Keep links with one-line relevance notes, not copied documents. This section permits artifact paths (not implementation file prescriptions). Omit nonexistent references rather than inventing them; if the source is only this conversation, say so and retain the binding decisions above. Do not add a new interview or repository-wide research pass just to fill this section.
+
 </spec-template>

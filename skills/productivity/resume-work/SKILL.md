@@ -26,6 +26,6 @@ A structurally valid checkpoint is not necessarily safe to resume. Treat changed
 
 ## Resume from reality
 
-Summarize the reconciled objective, completed work, live risks, and the one next action. Follow current repository state where it conflicts with stale prose. Load source artifacts by pointer only as needed, invoke the suggested skills that still fit, and begin with the checkpoint's next action unless reconciliation invalidated it.
+Summarize the reconciled objective, completed work, live risks, and the one next action. Follow current repository state where it conflicts with stale prose. Load source artifacts by pointer only as needed and invoke suggested skills that still fit. Begin the saved next action only when it matches the user's current role and authority: an adviser recovering a coder's context stays read-only and recommends that action rather than implementing it. Recover selected report/assignment/reviewed-digest pointers when present; do not scan or adopt unrelated sessions.
 
 When local gitignored state is absent in a cloud job, say continuity could not be recovered locally and reconstruct only from tracked issues, specs, ADRs, design contracts, commits, and user-provided handoffs. Do not pretend host automation preserved state it could not persist.

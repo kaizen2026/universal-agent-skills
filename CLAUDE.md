@@ -1,5 +1,7 @@
 Universal Agent Skills is an MIT-licensed derivative of `mattpocock/skills`, preserving upstream history and attribution while adding frontend design and continuity workflows.
 
+For ongoing adviser/worker coordination and low-cost monitoring work, read [the agreed design and working notes](./docs/plans/advisor-worker-coordination.md) before continuing. Keep that record current at meaningful boundaries, separating agreed decisions, proposed work, and verified results. It is a context record, not blanket permission to launch agents, alter host settings, commit, or push.
+
 Skills are organized into bucket folders under `skills/`:
 
 - `engineering/` — daily code work

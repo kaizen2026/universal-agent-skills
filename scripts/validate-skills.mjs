@@ -161,6 +161,12 @@ for (const name of ["core.mjs", "adapters.mjs", "cli.mjs"]) {
 }
 
 const designTemplate = read("skills/engineering/frontend-design/references/DESIGN-CONTRACT.md");
+for (const name of ["scripts/exchange.mjs", "references/EXCHANGE.md"]) {
+  const target = `skills/engineering/implement/${name}`;
+  if (!existsSync(join(repository, target)) || read(`skills/engineering/prompt-engineer/${name}`) !== read(target)) {
+    fail(`exchange mirror is stale: ${target}; run node scripts/sync-exchange.mjs`);
+  }
+}
 for (const heading of [
   "Selected direction",
   "Design principles",

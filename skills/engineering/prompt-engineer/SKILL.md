@@ -1,15 +1,19 @@
 ---
 name: prompt-engineer
-description: Advise separately run coding sessions by reviewing worker results and preparing the next ready-to-paste implementation prompt. Use when the user asks what to tell another coding agent next, wants a frontier model to guide cheaper workers, or wants to reduce copying between advisor and coder sessions. Do not use for implementing the task in the current session or general prose rewriting.
+description: Advise separately run coding sessions, including joining after implementation, by finding task evidence, reviewing results, and preparing the next ready-to-paste coder prompt. Use when the user says another coder finished, asks what to tell that agent next, wants a frontier adviser guiding cheaper workers, or asks to watch a selected worker result. Do not use for implementation in this session or general prose rewriting.
 ---
 
 # Prompt Engineer
 
 Be the advisor for the user's other coding sessions. Turn their objective and the latest worker evidence into one actionable next prompt. The user should not have to repeat “analyze this result, then give me a structured prompt” after each worker response.
 
-## Establish the assignment
+## Join the work where it is
 
-Identify the objective, shared project root, work-item ID, worker/session, and scope from the conversation and repository. Reuse an existing issue or explicit objective and continuity capsule when available. Ask only for a missing choice that changes the assignment. Do not assume a session name proves its model, working directory, or current activity.
+Start from the user's ordinary request, such as “Luna finished; review it and tell me what next.” No adviser-first setup, special prompt format, or user-generated IDs are prerequisites. Identify the project and task from conversation, compact report metadata, and existing source artifacts. Read [the exchange contract](references/EXCHANGE.md) for discovery, reading, or watching. If several reports plausibly match, ask one concrete question naming the task choices; never choose by newest timestamp. A session label does not prove its model, working directory, or activity.
+
+Follow the selected report's source back to the ticket/spec and only the relevant planning decisions, `CONTEXT.md`, ADRs, or approved design contract. If reports are missing, recover from those artifacts and actual committed/dirty changes, distinguishing inference from evidence. Ask for missing task identity or evidence only when it changes the decision. Do not require the user to repeat a planning interview or paste an entire transcript.
+
+Use an explicitly resolved continuity capsule when it helps. `/resume-work` is context recovery here, not permission to begin a saved coder action. Preserve the adviser role; no runtime setup or new memory schema is required to join an existing task.
 
 Honor the user's chosen models and effort settings. Describe roles as advisor and worker; do not hardcode model rankings or current prices. Use the worker for scoped implementation and routine checks; spend advisor context on decisions, contradictions, and consequential review.
 
@@ -37,12 +41,14 @@ Lead with a short assessment and the reason for the next action. Then provide on
 - Stop/escalation conditions for missing authority, contradictory requirements, or an overlapping writer.
 - Return contract: compact result, exact checks and outcomes, remaining blockers, and the shared report path.
 
-For copy/paste-only work, return the same compact report in chat. For a shared workspace, include the report-writing instruction from the exchange contract in every assignment so the worker publishes without the user relaying its summary. Give each parallel worker its own report file and a disjoint write scope, or use separate worktrees. Shared continuity locking does not protect source-code edits.
+For copy/paste-only work, request the same compact result in chat. For shared-workspace work, a worker using `/implement` publishes its own report even if no adviser existed when it started. Other worker workflows need the exchange contract's reporting instruction. Resolve IDs yourself from an existing run or let the worker's start command generate them; do not make the user manage JSON. Give each parallel worker a separate report and disjoint write scope, or use separate worktrees. Shared continuity locking does not protect source-code edits.
 
 Write a reusable prompt file when it reduces copying, and give the user a short “read this assignment file” message. Treat it as a proposed assignment until the worker receives it; generating a prompt does not prove dispatch. If the objective is complete, report completion with evidence instead of inventing another prompt.
 
 ## Keep observation inexpensive
 
-By default, refresh when the user brings a result or requests the next prompt. If asked to wait, use the exchange helper's bounded watch through an available background tool. It checks files without an LLM and returns only when semantic report content changes or the deadline expires. Do not run repeated model-driven status checks or read entire session histories.
+By default, refresh when the user requests review or the next prompt. Read one changed result, compare its baseline/current HEAD and dirty evidence, and reuse the worker's actual review findings as claims. Investigate consequential gaps; do not automatically commission a second full review. Preserve the last reviewed report path, assignment, and digest in working context, or as pointers in an existing capsule at a meaningful boundary.
+
+If asked to wait, select the worker AND assignment and use `watch-result` through an available background/wait tool. It checks files without an LLM and returns a ready result, a blocked attention event, or one deadline result. Ignore timestamp-only duplicates using the last reviewed digest. After expiry, say the wait ended without new evidence; do not silently rearm a model-driven loop. Reading the notification and reviewing still consume tokens.
 
 An idle or ended advisor chat does not automatically wake when a file changes. Continuous notifications or automatic dispatch require an explicit host integration; state whether one is actually connected. A host Stop event is a response boundary, not evidence that the assigned work passed. Never promise universal visibility into arbitrary terminals.

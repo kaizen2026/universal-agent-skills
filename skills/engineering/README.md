@@ -6,7 +6,7 @@ Composable skills for product discovery, implementation, design, and review.
 
 - **[ask-matt](./ask-matt/SKILL.md)** — Route a situation through the collection.
 - **[grill-with-docs](./grill-with-docs/SKILL.md)** — Grill while maintaining project vocabulary and decisions.
-- **[implement](./implement/SKILL.md)** — Build a spec or issue and close with review.
+- **[implement](./implement/SKILL.md)** — Build settled work, review it, and publish a compact result for later advice.
 - **[improve-codebase-architecture](./improve-codebase-architecture/SKILL.md)** — Survey codebase deepening opportunities.
 - **[project-progress](./project-progress/SKILL.md)** — Render an evidence-based visual dashboard from the project's written and executable sources.
 - **[to-spec](./to-spec/SKILL.md)** — Synthesize the current discussion into a tracked spec.
@@ -24,7 +24,7 @@ Composable skills for product discovery, implementation, design, and review.
 - **[frontend-design](./frontend-design/SKILL.md)** — Explore three runnable directions and approve a design contract.
 - **[frontend-review](./frontend-review/SKILL.md)** — Review rendered UI, accessibility, responsive behavior, and regressions.
 - **[prototype](./prototype/SKILL.md)** — Build a throwaway logic or state-model prototype.
-- **[prompt-engineer](./prompt-engineer/SKILL.md)** — Review other coding sessions' results and prepare the next scoped worker prompt.
+- **[prompt-engineer](./prompt-engineer/SKILL.md)** — Join before or after coding, find task evidence, and prepare the next scoped worker prompt.
 - **[research](./research/SKILL.md)** — Investigate primary sources in a background agent.
 - **[resolving-merge-conflicts](./resolving-merge-conflicts/SKILL.md)** — Resolve an active merge or rebase by intent.
 - **[setup-universal-agent-skills](./setup-universal-agent-skills/SKILL.md)** — Configure repository conventions, continuity runtime, and opted-in adapters.

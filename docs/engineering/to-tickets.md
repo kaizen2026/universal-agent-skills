@@ -39,7 +39,7 @@ The edges are the point of the artifact. They read two ways depending on the tra
 | Local markdown | Text in one file per ticket under `.scratch/<feature>/issues/<NN>-<slug>.md`, numbered blockers-first | Top to bottom, by hand |
 | A real tracker (GitHub, Linear) | Native blocking links, or sub-issues where the tracker has them | Any ticket whose blockers are done is on the **frontier** and can be grabbed |
 
-The edges live in the ticket either way. The medium only decides whether anything can act on them in parallel. `to-tickets` produces the artifact; running it — one session at a time, or a fleet — is your job, not the skill's.
+The edges live in the ticket either way. Both templates also retain source references to the originating spec and governing decisions, so a fresh implementer or later adviser can recover the reasoning without your chat history. `to-tickets` produces the artifact; running it — one session at a time, or a fleet — is your job, not the skill's.
 
 ## The wide-refactor exception
 
@@ -84,7 +84,7 @@ The skill stops at the artifact, and there is no auto-dispatch mode. Dispatch is
 - Every ticket has an answer to "what can I demo when this is done?" — and the answer is behaviour, not a layer.
 - The list comes back to you numbered, with a "Blocked by" line on each, before anything is published.
 - The ticket at the top has no blockers and can be started immediately.
-- Nothing in a ticket body is a file path or a line number, except a snippet a prototype produced.
+- Source artifact links lead back to the spec or decisions; implementation file prescriptions and line numbers are absent, apart from decision-rich prototype snippets.
 - Each ticket reads like something a fresh session could finish without you in the room.
 - Prefactoring, where it found any, is at the front of the order rather than mixed into feature tickets.
 

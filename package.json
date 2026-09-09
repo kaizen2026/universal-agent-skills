@@ -10,15 +10,17 @@
   "license": "MIT",
   "scripts": {
     "changeset": "changeset",
-    "version": "changeset version && node scripts/sync-plugin-version.mjs && node scripts/sync-runtime.mjs",
+    "version": "changeset version && node scripts/sync-plugin-version.mjs && node scripts/sync-runtime.mjs && node scripts/sync-exchange.mjs",
     "check-plugin-version": "node scripts/sync-plugin-version.mjs --check",
     "sync-runtime": "node scripts/sync-runtime.mjs",
     "check-runtime": "node scripts/sync-runtime.mjs --check",
+    "sync-exchange": "node scripts/sync-exchange.mjs",
+    "check-exchange": "node scripts/sync-exchange.mjs --check",
     "validate:skills": "node scripts/validate-skills.mjs",
     "test:runtime": "node --test tests/*.test.mjs",
     "test:installer": "node scripts/installer-smoke.mjs",
     "test:plugin": "node scripts/claude-plugin-smoke.mjs",
-    "test": "npm run check-plugin-version && npm run check-runtime && npm run validate:skills && npm run test:runtime"
+    "test": "npm run check-plugin-version && npm run check-runtime && npm run check-exchange && npm run validate:skills && npm run test:runtime"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",

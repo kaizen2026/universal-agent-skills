@@ -22,6 +22,8 @@ Use it inside a workspace where Git status and artifact pointers can be reconcil
 
 The capsule's sharpest field is one concrete next action. Combined with exact validation and authority pointers, it lets a later continuity epoch start from evidence rather than reconstructing chat.
 
+For adviser/worker work, those existing fields also retain the role, task source, selected report, assignment, and last reviewed result digest. The capsule points to the result instead of copying it. A recommended coder action is not permission for a resumed adviser to do the coding.
+
 Every successful semantic write advances the capsule revision and records update provenance. A stale contribution leaves the capsule unchanged and becomes a redacted, size-bounded proposal carrying its base revision and harness/session provenance. Automatic lifecycle hooks cannot infer objective, decisions, or test meaning; the phase-aware capsule remains the semantic authority.
 
 ## Concurrent updates

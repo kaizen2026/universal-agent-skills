@@ -2,7 +2,7 @@
 
 `prompt-engineer` makes one coding conversation the advisor for other coding sessions. It assesses worker evidence and produces the next prompt, ready to paste, so you do not have to repeat the review-and-prompt instruction after every result.
 
-The advisor inspects and directs; the selected worker performs the implementation. You can keep the models and effort settings you already prefer. The skill's value is a precise assignment and return path, not a fixed model ranking.
+The advisor can join after coding has already happened. It finds the task's report and relevant decisions, checks the evidence, and stays in the advisory role. You can keep the models and effort settings you already prefer; the user does not need to prepare coordination IDs or a special prompt format.
 
 ## When to reach for it
 
@@ -15,7 +15,7 @@ Invoke `$prompt-engineer` in Codex or `/prompt-engineer` with Claude's standalon
 
 ## Prerequisites
 
-Copy/paste operation needs only an objective and a worker result. Shared reports require both sessions to access an agreed project directory. The optional reader/watcher uses Node.js and no package dependencies. Separate worktrees must be told the shared report location explicitly.
+Shared reports require both sessions to access the selected project directory. The report helper uses Node.js and no package dependencies. Separate worktrees must be told the shared report location explicitly. Without a report, the advisor can recover relevant task documents and changes, but must label missing evidence; a pasted compact result remains the fallback when files are not shared.
 
 ## One assignment, one return path
 
@@ -27,11 +27,11 @@ The advisor reads compact results and relevant source evidence. Reported success
 
 **Can I stop copying the coder's summary into the advisor?**
 
-Yes, when both sessions can read the same directory. Every generated assignment tells the worker to write a compact report there. Ask the advisor for the next prompt and it reads the report. Remote sessions need an explicitly configured transport or the pasted-result fallback.
+Yes, when both sessions can read the same directory. A normal [implement](./implement.md) run now saves a compact result even if no advisor was present. Later, say “Luna finished the slug task; review it and tell me what next.” The advisor finds the matching report and source documents. If several tasks match, it asks which one rather than guessing. Other coder workflows need reporting instructions or the compact pasted-result fallback.
 
 **Can it watch without spending frontier-model tokens?**
 
-The local watcher checks for a changed report without model calls. Reading the resulting tool output, reviewing code, and generating the next prompt still consume tokens. The default is on-demand refresh; a bounded watch is available when requested. A completed chat does not wake on file changes without a host integration.
+The local watcher checks one selected worker and assignment without model calls. It waits up to 60 seconds and returns once: a result ready for review, a blocker needing attention, or a deadline. Working updates, malformed files, and timestamp-only duplicates do not cause repeated reviews. Starting the wait, reading its result, reviewing code, and writing the next prompt still consume tokens. A completed chat does not wake on file changes without a host integration, and the advisor does not silently restart an expired wait.
 
 **Does it know every session I have open?**
 
@@ -45,6 +45,7 @@ It prepares the prompt and follows your chosen models. Launching or steering ano
 
 - A result followed by “next” produces an assessment and the next usable coder prompt.
 - Worker summaries arrive through the agreed files without manual relay.
+- A fresh advisor can join after implementation, without an earlier advisor-created assignment.
 - A stale assignment, failing check, or missing evidence changes the recommendation.
 - Unchanged reports do not trigger repeated expensive analysis.
 - Each worker knows what it can edit and when to stop.

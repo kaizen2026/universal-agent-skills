@@ -25,4 +25,6 @@ If `.agents/universal-agent-skills/runtime/cli.mjs` exists, use its `activate` c
 
 Lifecycle hooks cannot infer the live objective, decisions, test meaning, or next action. The phase-aware manual checkpoint remains the semantic authority for the active Work Item ID.
 
+For adviser/worker work, use existing binding decisions and authority pointers to retain the current role, task source, selected report path/assignment, and last reviewed digest. Do not duplicate the report or add a parallel memory schema. Keep an adviser's recommended worker action distinct from permission for the resumed adviser to perform it.
+
 Report the checkpoint path, timestamp, validation evidence captured, and any information deliberately omitted for safety.

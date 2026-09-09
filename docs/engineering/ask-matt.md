@@ -25,7 +25,7 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 
 **Do I have to keep asking for a structured prompt for another coding session?**
 
-No. Start [prompt-engineer](./prompt-engineer.md) for that workflow. It retains the advisory role through follow-ups, reviews compact results, and prepares the next scoped prompt. Shared report files can replace manual summary copying; it does not silently launch or control workers.
+No. Use [prompt-engineer](./prompt-engineer.md) for that workflow, including after a normal implementation has already finished. It finds the matching result and source decisions, retains the advisory role through follow-ups, and prepares the next scoped prompt. Implementation now publishes the report without an adviser-first assignment. A requested bounded wait checks files without repeated model polling; idle-chat wake-up and prompt dispatch are not connected.
 
 **Why keep the upstream name in a universal derivative?**
 

@@ -65,9 +65,9 @@ You can combine the Claude plugin with an npx installation targeting **only Code
 
 ### Advisor and worker sessions
 
-[`prompt-engineer`](./skills/engineering/prompt-engineer/SKILL.md) turns a separate advisor session into a reviewer and next-prompt writer for your coding workers. Invoke `$prompt-engineer` in Codex, `/prompt-engineer` in standalone Claude, or `/universal-agent-skills:prompt-engineer` with the plugin, then state the objective and worker scope once.
+[`prompt-engineer`](./skills/engineering/prompt-engineer/SKILL.md) turns a separate advisor session into a reviewer and next-prompt writer for your coding workers. It can join after a normal [`implement`](./skills/engineering/implement/SKILL.md) run: “The coder finished the slug task. Review it and tell me what next.” No adviser-first assignment or user-managed IDs are required. Explicit invocation also works: `$prompt-engineer` in Codex, `/prompt-engineer` in standalone Claude, or `/universal-agent-skills:prompt-engineer` with the plugin.
 
-Workers publish compact reports to their own ignored files under `.agents/state/coordination/<work-item-id>/`. The advisor reads the changed report, checks material evidence, and prepares the next assignment without requiring you to paste the whole worker response. Its read-only helper can wait for a changed report without model calls. Reviewing results still costs tokens; live session discovery, notifications, and dispatch depend on host support and are not universally automatic. Start with the [advisor workflow guide](./docs/engineering/prompt-engineer.md).
+Implementation publishes a compact result under `.agents/state/coordination/<work-item-id>/`, with source references, check/review outcomes, and Git evidence. The advisor finds the matching task, reads only the useful evidence, and prepares the next prompt. A requested watcher checks one worker/assignment locally for up to 60 seconds and returns one result or deadline, without repeated model polling. Starting the wait and reviewing results still use tokens. Idle-chat wake-up and automatic dispatch are not connected. Start with the [advisor workflow guide](./docs/engineering/prompt-engineer.md) and [agreed design notes](./docs/plans/advisor-worker-coordination.md).
 
 ## What v1 adds
 
@@ -169,5 +169,7 @@ Native Codex and Claude compaction acceptance cannot be produced by CI alone; ru
 The validator checks the portable Agent Skills name, description, layout, and resource contract for every promoted skill. A small set of retained upstream skills also carry documented Claude Code invocation fields such as `disable-model-invocation`; those host extensions power the optional plugin and are reported separately from portable metadata.
 
 The [advisor behavioral scenarios](./evals/prompt-engineer.md) define the next model-quality evaluation. They are not marked passed by the deterministic suite, and running them does not authorize worker dispatch or paid sessions by itself.
+
+The exchange helper and contract are maintained in `prompt-engineer` and bundled into `implement` for independent installation. After editing their source, run `npm run sync-exchange`; `npm test` rejects a stale bundle. Run `node scripts/advisor-watch-smoke.mjs --helper "<installed-skill>/scripts/exchange.mjs"` to exercise one installed watcher and a separate simulated publisher without model calls.
 
 To incorporate upstream work, fetch `upstream`, review the changes against this derivative's integration points, and preserve upstream commits when merging. Do not squash away attribution.

@@ -57,7 +57,7 @@ Nothing keeps it in sync, so in practice it is a snapshot of what you knew at th
 Less well, and this is a known limitation. The template leans hard on user stories, which is the wrong shape for architectural work — you end up writing stories nobody asked for around decisions that are really about interfaces and invariants. Lean on the implementation-decisions and testing-decisions sections instead, and let the durable architectural calls land as ADRs via [grill-with-docs](https://aihero.dev/skills-grill-with-docs) rather than trying to make the spec carry them.
 
 **Will it check the tracker for related work, or cite the ADRs it's respecting?**
-No to both. It reads and respects the ADRs covering the area it touches, but it doesn't link them, and it doesn't search the tracker for overlapping issues before drafting — so a spec can quietly duplicate work someone already filed. Search the tracker yourself first if the area is busy.
+It now includes a short Source References section linking the existing decisions that materially govern the spec, including relevant ADRs or a wayfinder map. It does not add a tracker-wide overlap search before drafting; check for duplicate work separately if the area is busy. Missing references are not invented.
 
 **`/to-tickets` couldn't read my spec — it kept truncating.**
 Very large specs can outgrow what a tracker issue will serve back cleanly, and there is no local copy to fall back on. The fix is context hygiene: don't [clear](https://www.aihero.dev/ai-coding-dictionary/clearing) or [compact](https://www.aihero.dev/ai-coding-dictionary/compaction) between `/to-spec` and `/to-tickets`. Run them in the same window and the spec never has to be re-fetched at all.

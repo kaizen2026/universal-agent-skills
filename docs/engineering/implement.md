@@ -2,7 +2,7 @@
 
 `implement` builds work that has already been decided. You point it at a [ticket](https://www.aihero.dev/ai-coding-dictionary/ticket), a [spec](https://www.aihero.dev/ai-coding-dictionary/spec), or the plan you just agreed in the conversation, and it writes the code, drives [tdd](https://aihero.dev/skills-tdd) at the seams, typechecks as it goes, runs [code-review](https://aihero.dev/skills-code-review) at the end, and commits to the current branch.
 
-It never reopens the plan. There is no interview, no clarifying round, no proposal of a different approach. Whatever was settled upstream is the input, and the skill's whole job is to turn that into a commit. That is what separates it from typing "build this" at a fresh [agent](https://www.aihero.dev/ai-coding-dictionary/agent), which will happily redesign the work while it builds it.
+It implements settled decisions instead of reopening the design. A genuinely ambiguous task reference or missing authority still needs clarification. It respects instructions such as “do not commit,” and saves a compact result for a later adviser without requiring you to ask for a report. That is what separates it from typing "build this" at a fresh [agent](https://www.aihero.dev/ai-coding-dictionary/agent).
 
 ## When to reach for it
 
@@ -20,11 +20,11 @@ Where the work currently lives decides whether this is the right skill:
 | One concrete behaviour you want test-first, with no spec | [tdd](https://aihero.dev/skills-tdd) directly |
 | Already built, and you want it checked | [code-review](https://aihero.dev/skills-code-review) directly |
 
-The same-session case is worth naming because the skill's own first line doesn't cover it. `SKILL.md` says "the spec or tickets", which nudges the [model](https://www.aihero.dev/ai-coding-dictionary/model) to go hunting for a file that doesn't exist. If the plan lives only in the thread, say so when you invoke it.
+The same-session case is supported: a settled plan in the thread is valid input. The report identifies its source as the conversation rather than inventing a spec file.
 
 ## Prerequisites
 
-`implement` commits to the branch you are on. It does not create one, and it does not ask. Check you are on the branch you want the work on before you start.
+`implement` normally commits to the branch you are on; explicit no-commit instructions take precedence. It does not push without authority. Check the branch before starting. The optional local report helper needs Node.js; if reporting is unavailable, the final reply says so and includes a compact fallback. It installs no hooks and changes no AI settings.
 
 If the tickets came from [to-tickets](https://aihero.dev/skills-to-tickets), the tracker they live on was configured by [setup-universal-agent-skills](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/setup-universal-agent-skills/SKILL.md). `code-review` reads the same configuration to find the originating spec at close-out. Frontend work governed by an approved `docs/design/<feature>/DESIGN.md` uses [frontend-build](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/frontend-build/SKILL.md). A prescribed maintenance change that introduces no visual decision does not need a new contract; an unresolved new direction returns to `frontend-design`.
 
@@ -32,12 +32,12 @@ If the tickets came from [to-tickets](https://aihero.dev/skills-to-tickets), the
 
 A run is six beats, in order:
 
-1. Record the starting `HEAD`, then read the ticket or spec and work out the seams.
+1. Resolve the task, record starting `HEAD` and existing dirty changes, and create its small local working report. An unborn branch stays `unknown`; no commit is invented.
 2. For governed frontend work, invoke [frontend-build](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/frontend-build/SKILL.md) against the approved design contract; route only an unresolved visual decision back to `frontend-design`.
 3. Drive [tdd](https://aihero.dev/skills-tdd) at the pre-agreed seams, one red-green slice at a time.
 4. Typecheck often, run single test files as it goes.
 5. Run the full test suite once, at the end.
-6. Run [code-review](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/code-review/SKILL.md) against the recorded fixed point, including staged, unstaged, untracked, and committed changes plus its independent frontend lane when UI changed. Resolve blocking findings, rerun affected checks, then commit to the current branch.
+6. Run [code-review](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/code-review/SKILL.md) against the recorded fixed point, including staged, unstaged, untracked, and committed changes plus its independent frontend lane when UI changed. Resolve blocking findings, rerun affected checks, commit if allowed, and publish the result with check evidence, review findings, source pointers, and remaining blockers.
 
 One run covers one ticket. The tickets [to-tickets](https://aihero.dev/skills-to-tickets) produces are tracer-bullet vertical slices sized to fit a single fresh [context window](https://www.aihero.dev/ai-coding-dictionary/context-window), so the intended rhythm is: clear context, implement one ticket, commit, clear again. Each ticket is self-contained, which is what makes the previous ticket's context disposable.
 
@@ -73,14 +73,19 @@ Probably the ticket is too big rather than the skill being misused. A run does c
 
 **`/implement #2` in a fresh session worked on something completely unrelated.**
 
-`#2` is resolved against whatever numbered list the agent can see, which in a fresh session may be a todo file, a checklist, or another work list rather than the configured tracker. The resolution is confident rather than fail-closed, so the mistake is not obvious until it has started. Pass the full reference, the issue URL or `owner/repo#2`, and ask it to confirm the title back before it begins.
+A bare number can refer to several lists in a fresh session. The skill now resolves the task's title and source before coding and asks if the reference remains ambiguous. A full issue URL or local ticket path is still the clearest input.
+
+**Do I need to start the adviser before implementation?**
+
+No. The result is saved under `.agents/state/coordination/` even without an adviser-created assignment. [prompt-engineer](./prompt-engineer.md) can read it later. Reports include observed checks and review outcomes, not a guarantee of correctness or a live-session signal. The result directory is ignored by Git; a report never closes your ticket automatically.
 
 ## It's working if
 
 - The session opens by reading the ticket or spec and restating what it will build, rather than asking you what to build.
 - You can see an actual `/tdd` invocation in the trace, not just tests appearing in the diff.
 - Typechecks and single test files run repeatedly during the run, and the full suite runs once near the end.
-- The run reaches a commit on your current branch without you prompting it to carry on.
+- The run reaches a scoped commit, or leaves changes uncommitted when you requested that.
+- The final reply names the shared result file or explicitly explains why reporting was unavailable.
 - The diff is one ticket's worth of change: a vertical slice through every layer, not several tickets swept together.
 
 ## Where it fits

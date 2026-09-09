@@ -16,11 +16,15 @@ Where an existing app-server connection is available, [the documented API](https
 
 Do not start another daemon, resume an active thread, inject messages, or interrupt a worker merely to inspect status. This first version uses shared reports when a suitable read-only connection is absent. Session discovery and command availability do not prove that a separate running terminal can be controlled safely.
 
+On this Windows test host, the installed CLI reported that daemon lifecycle management is Unix-only. Do not advertise that route as a verified Windows connection. Other supported integrations require their own capability check.
+
 ## Costs and automation
 
 - File checks and deterministic event handlers need no model calls.
 - Generating a summary with a model, reviewing evidence, and drafting the next prompt consume model tokens. Avoid numeric cost promises without observed usage and current pricing.
 - The worker can write its report as part of its existing turn, eliminating manual summary transfer but adding a small amount of output work.
 - Continuous advisor wake-up requires a host notification/queue integration. Automatically launching or steering workers is a separate operating mode requiring an explicit execution and budget policy.
+
+A bounded file-watch tool result can resume an already active adviser turn. An asynchronous Stop hook does not itself start a new model turn in an idle conversation; see [Codex hooks](https://learn.chatgpt.com/docs/hooks). Event capture, notification delivery, AI review, and dispatch are separate capabilities. None of the latter three follows merely from seeing a background shell labelled WATCHING.
 
 Retain copy/paste and shared-report operation across hosts. A skill teaches the workflow; it does not itself supply a universal session-control API.

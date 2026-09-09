@@ -76,6 +76,8 @@ Do NOT close or modify any parent issue.
 
 **Status:** ready-for-agent
 
+**Source:** the parent spec/issue URL or local artifact path, with any governing decision/design pointers needed for this slice. If the source is only the conversation, say so and retain its binding decisions in the ticket.
+
 - [ ] Acceptance criterion 1
 - [ ] Acceptance criterion 2
 
@@ -86,6 +88,10 @@ Do NOT close or modify any parent issue.
 ## Parent
 
 A reference to the parent issue on the tracker (if the source was an existing issue, otherwise omit this section).
+
+## Source References
+
+The originating spec/map path or URL and governing decision/design pointers for this slice. Omit duplicate parent links and nonexistent references; when sourced only from conversation, say so and preserve binding decisions in the ticket.
 
 ## What to build
 
@@ -102,4 +108,4 @@ The end-to-end behaviour this ticket makes work, from the user's perspective —
 
 </issue-template>
 
-In either form, avoid specific file paths or code snippets — they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
+In either form, avoid implementation file paths or code snippets — they go stale fast. Source artifact links are allowed and important: a fresh implementer or adviser must be able to trace the slice back to its decisions. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.

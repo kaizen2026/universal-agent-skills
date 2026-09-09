@@ -24,6 +24,8 @@ Every material claim receives one of those statuses. A changed HEAD, missing poi
 
 Schema validity alone is not readiness. Changed machine state, validation tied to another commit, missing pointers, or an old checkpoint keeps the resume disposition unresolved until the discrepancy is checked.
 
+Recovery also preserves the user's current role and authority. An adviser reading a coder's checkpoint recommends the saved next action; it does not start implementing merely because the checkpoint says to. Selected report and last-reviewed-result pointers are recovered when present, without adopting unrelated sessions.
+
 ## Common questions
 
 **Does resume clean the tree back to the checkpoint?**
