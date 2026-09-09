@@ -766,6 +766,20 @@ test("status commands never mutate local continuity state", (t) => {
   assert.doesNotThrow(() => JSON.parse(first.stdout));
 });
 
+test("status distinguishes an explicit capacity from a measured host observation", async (t) => {
+  const root = workspace(t, "uas-status-provenance-");
+  ensureConfig(root);
+  const before = snapshotTree(root);
+  const capture = captureIo();
+  const result = await main(["status", "--project", root, "--context-window", "200000"], capture.io);
+  assert.equal(capture.exitCode, 0);
+  assert.equal(result.threshold.detectedContextWindow, 200000);
+  assert.equal(result.threshold.currentSessionVerified, false);
+  assert.equal(result.threshold.sourceTag.contextWindow, "explicit-input");
+  assert.equal(result.threshold.sourceTag.confidence, "configured-capacity");
+  assert.deepEqual(snapshotTree(root), before);
+});
+
 test("identity validation rejects path traversal and malformed work-item, harness, and session identifiers", (t) => {
   const root = workspace(t, "uas-identity-");
   initGit(root);

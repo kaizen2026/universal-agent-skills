@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readYamlMapping, validateAgentMetadata } from "./lib/skill-metadata.mjs";
 
 const repository = join(dirname(fileURLToPath(import.meta.url)), "..");
 const promotedRoots = ["skills/engineering", "skills/productivity"];
@@ -14,6 +15,7 @@ const v1Skills = new Set([
   "setup-universal-agent-skills",
   "checkpoint-work",
   "resume-work",
+  "prompt-engineer",
 ]);
 const errors = [];
 const warnings = [];
@@ -44,15 +46,17 @@ function parseFrontmatter(source, path) {
     fail(`${path}: missing YAML frontmatter`);
     return { values: {}, keys: [] };
   }
-  const values = {};
-  const keys = [];
-  for (const line of match[1].split(/\r?\n/)) {
-    const field = line.match(/^([a-z][a-z0-9-]*):(?:\s*(.*))?$/);
-    if (!field) continue;
-    keys.push(field[1]);
-    values[field[1]] = (field[2] || "").trim().replace(/^(?:"(.*)"|'(.*)')$/, "$1$2");
+  const values = parseYamlMapping(match[1], path);
+  return { values, keys: Object.keys(values) };
+}
+
+function parseYamlMapping(source, path) {
+  try {
+    return readYamlMapping(source);
+  } catch (error) {
+    fail(`${path}: invalid YAML: ${error.message}`);
+    return {};
   }
-  return { values, keys };
 }
 
 const skills = promotedSkills();
@@ -64,11 +68,11 @@ for (const directory of skills) {
   const expected = directory.split("/").at(-1);
 
   if (values.name !== expected) fail(`${path}: name must match parent directory (${expected})`);
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(values.name || "") || values.name.length > 64) {
+  if (typeof values.name !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(values.name) || values.name.length > 64) {
     fail(`${path}: name violates the Agent Skills naming constraints`);
   }
-  if (!values.description || values.description.length > 1024) fail(`${path}: description must contain 1-1024 characters`);
-  if ((values.description || "").includes("<") || (values.description || "").includes(">")) {
+  if (typeof values.description !== "string" || !values.description.trim() || values.description.length > 1024) fail(`${path}: description must contain 1-1024 characters`);
+  if (/[<>]/.test(String(values.description || ""))) {
     fail(`${path}: description contains angle brackets rejected by common skill validators`);
   }
   if (names.has(values.name)) fail(`${path}: duplicate promoted skill name ${values.name}`);
@@ -88,9 +92,9 @@ for (const directory of skills) {
 
   const agentMetadata = `${directory}/agents/openai.yaml`;
   if (!existsSync(join(repository, agentMetadata))) fail(`${directory}: missing agents/openai.yaml`);
-  else if (v1Skills.has(values.name)) {
-    const metadata = read(agentMetadata);
-    if (!metadata.includes(`$${values.name}`)) fail(`${agentMetadata}: default_prompt must explicitly invoke $${values.name}`);
+  else {
+    const metadata = parseYamlMapping(read(agentMetadata), agentMetadata);
+    for (const error of validateAgentMetadata(values, metadata, v1Skills.has(values.name))) fail(`${agentMetadata}: ${error}`);
   }
 
   const bucket = directory.includes("/engineering/") ? "engineering" : "productivity";

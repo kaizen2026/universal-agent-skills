@@ -1,6 +1,6 @@
 ## What it does
 
-`setup-universal-agent-skills` configures a repository's issue tracker and domain docs, installs the local continuity runtime, and offers host-specific lifecycle adapters. It separates portable skill behavior from automation that only a particular host can provide.
+`setup-universal-agent-skills` configures a repository's issue tracker and domain docs, installs the local continuity runtime, and offers host-specific lifecycle adapters. Tracker seeds include scoped operations, blocking edges, Wayfinding maps and decision tickets, and cooperative assignment. The triage seed maps two categories and five states without silently creating remote labels. It separates portable skill behavior from automation that only a particular host can provide.
 
 ## When to reach for it
 
@@ -48,6 +48,10 @@ It reports them and leaves them alone. `status` is read-only: it counts managed 
 **Does a global `skills` CLI copy prove discovery?**
 
 No. Current Codex and Antigravity documented global paths can differ from installer mappings. Setup verifies the host-visible location, reports mismatches, and requires a separate explicit choice before creating any reversible user-scope bridge. Project installation remains the reliable default.
+
+**Does `status --context-window` prove the running model's capacity?**
+
+No. It calculates thresholds from an explicit input and labels the capacity as configured, not measured in the current session. Host telemetry needs separate evidence; supplying a number cannot authenticate that observation.
 
 ## It's working if
 

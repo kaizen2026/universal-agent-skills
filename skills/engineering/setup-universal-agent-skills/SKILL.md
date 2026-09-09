@@ -25,6 +25,8 @@ For Codex, resolve capacity from an explicit `--context-window` or the project's
 
 Confirm the issue tracker and domain-doc layout using the relevant seed references in this folder. Then ask which detected host adapters to install. Make clear which files each adapter will touch, what it can automate, and what remains manual. Do not modify host configuration until the user explicitly opts in. Leave hook trust and command approval to the user.
 
+Read the selected tracker seed ([GitHub](references/issue-tracker-github.md), [GitLab](references/issue-tracker-gitlab.md), or [local Markdown](references/issue-tracker-local.md)) and [domain guidance](references/domain.md). When `triage` is installed, also read [triage roles](references/triage-labels.md). Preserve the seeds' operations and `Wayfinding operations` section when adapting them; replace repository placeholders with confirmed values. A custom tracker must define equivalent operations and state any unsupported capability.
+
 ## Install idempotently
 
 Locate `scripts/universal-agent-skills.mjs` relative to this skill and run its setup command for only the selected hosts. The script must:
@@ -43,9 +45,11 @@ Write or update the repository's `## Agent skills` guidance and `docs/agents/` f
 
 ## Verify and report
 
+Verify the generated tracker document includes operations, claiming, blocking, and frontier queries; domain guidance points to the right glossary; and triage roles match existing labels. Runtime status alone does not verify these agent-authored documents.
+
 Run runtime status and adapter verification. Report each host as `Configured`, `Available but not configured`, `Detected with limitations`, or `Not detected`. Include exact files changed, effective threshold, hook events installed, removal command, and any manual trust step.
 
-Verify the managed entries actually exist; do not trust reversal state alone. When setup used a sub-200k context window, retain that installed effective threshold in status while labelling the current session window unverified unless it was supplied again. If ignored reversal state is missing but managed entries remain, preserve the configuration and stop for manual recovery rather than guessing an earlier value.
+Verify the managed entries actually exist; do not trust reversal state alone. When setup used a sub-200k context window, retain that installed effective threshold in status. A capacity supplied again to `status` remains explicit configuration, not measured current-session telemetry. If ignored reversal state is missing but managed entries remain, preserve the configuration and stop for manual recovery rather than guessing an earlier value.
 
 Exercise Codex and Claude hooks through the installed runtime in a temporary repository, including a path containing spaces. Equivalent duplicate deliveries must produce one logical event, one transition, and one injection. A git HEAD that advanced since the last checkpoint is normal drift: the capsule is still injected and the event records `confirmed-with-drift`. Malformed input and storage failures must still return valid hook output and exit successfully so continuity failure cannot stop either host; each degraded delivery is appended to `diagnostics.jsonl` with its session identity.
 

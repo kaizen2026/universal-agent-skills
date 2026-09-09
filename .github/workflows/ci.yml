@@ -35,6 +35,9 @@ jobs:
       - name: Smoke-test skills CLI discovery, selective install, and update
         run: npm run test:installer
 
+      - name: Smoke-test native Claude plugin installation without model calls
+        run: npm run test:plugin
+
       - name: Smoke-test global skills CLI install on an ephemeral runner
         if: runner.os == 'Linux'
         env:

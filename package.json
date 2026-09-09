@@ -17,11 +17,13 @@
     "validate:skills": "node scripts/validate-skills.mjs",
     "test:runtime": "node --test tests/*.test.mjs",
     "test:installer": "node scripts/installer-smoke.mjs",
+    "test:plugin": "node scripts/claude-plugin-smoke.mjs",
     "test": "npm run check-plugin-version && npm run check-runtime && npm run validate:skills && npm run test:runtime"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
-    "@changesets/cli": "^2.30.0"
+    "@changesets/cli": "^2.30.0",
+    "yaml": "^2.9.0"
   },
   "packageManager": "npm@10.9.4"
 }

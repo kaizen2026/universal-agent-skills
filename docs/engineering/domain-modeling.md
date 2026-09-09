@@ -8,6 +8,8 @@ It is the **active** discipline, not the passive one. Reading `CONTEXT.md` to bo
 
 Type `/domain-modeling`, or the agent reaches for it automatically when a task fits. In practice, automatic invocation is the weakest part of the skill: when `grill-with-docs` or `wayfinder` say to load it, [models](https://www.aihero.dev/ai-coding-dictionary/model) frequently load `grilling` and skip this one. If a [grilling](https://www.aihero.dev/ai-coding-dictionary/grilling) session runs and `CONTEXT.md` is untouched at the end, that is what happened — invoke it by name alongside the other skill.
 
+Reach for it when discussing codebase terminology, writing or editing `CONTEXT.md`, or recording or editing an ADR. Merely reading a glossary does not invoke the active modeling workflow.
+
 Reach for it when the *words* are the problem:
 
 | The situation | The move |

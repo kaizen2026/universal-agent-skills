@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prompt Engineer"
+  short_description: "Review worker results and draft the next coder prompt"
+  default_prompt: "Use $prompt-engineer to assess my coder's latest result and prepare the next focused prompt."

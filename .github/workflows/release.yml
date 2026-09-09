@@ -38,7 +38,7 @@ jobs:
         run: npm ci
 
       - name: Run compatibility gate
-        run: npm test && npm run test:installer
+        run: npm test && npm run test:installer && npm run test:plugin
 
       - name: Verify requested version
         env:

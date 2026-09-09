@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -18,6 +18,7 @@ const required = [
   "checkpoint-work",
   "resume-work",
   "project-progress",
+  "prompt-engineer",
 ];
 
 try {
@@ -64,6 +65,24 @@ try {
 
   run(["--yes", "skills@latest", "update", "--project", "--yes"], scratch);
 
+  const shared = join(scratch, "shared project with spaces");
+  mkdirSync(shared);
+  const promoted = JSON.parse(readFileSync(join(repository, ".claude-plugin", "plugin.json"), "utf8")).skills.map(path => path.split("/").at(-1));
+  const sharedArgs = ["--yes", "skills@latest", "add", repository, "--skill", ...promoted, "--agent", "codex", "claude-code", "--yes"];
+  // No --copy: this is the actual shared-source installation documented for two hosts.
+  run(sharedArgs, shared);
+  run(sharedArgs, shared);
+  for (const name of promoted) {
+    const canonical = join(shared, ".agents", "skills", name, "SKILL.md");
+    const claude = join(shared, ".claude", "skills", name, "SKILL.md");
+    if (realpathSync(canonical) !== realpathSync(claude)) throw new Error(`${name}: Claude and Codex did not resolve to one canonical skill`);
+  }
+  if (readdirSync(join(shared, ".agents", "skills")).length !== promoted.length) throw new Error("shared install included non-promoted or duplicate skills");
+  const helper = join(shared, ".claude", "skills", "prompt-engineer", "scripts", "exchange.mjs");
+  const probe = spawnSync(process.execPath, [helper, "status", "--project", shared, "--work-item", "smoke"], { encoding: "utf8", windowsHide: true });
+  if (probe.status !== 0 || !probe.stdout.trim() || JSON.parse(probe.stdout).reports.length !== 0) throw new Error(`installed advisor helper failed or returned no report: ${probe.stderr}`);
+  if (existsSync(join(shared, ".agents", "state"))) throw new Error("advisor status must not create report state");
+
   if (process.env.UAS_RUN_GLOBAL_INSTALLER_SMOKE === "1") {
     run([
       "--yes",
@@ -87,7 +106,7 @@ try {
     }
   }
 
-  console.log(`skills CLI discovered ${required.length} required skills and passed selective install/update smoke tests for six target agents.`);
+  console.log(`skills CLI discovered ${required.length} required skills and passed selective install/update smoke tests for six target agents; ${promoted.length} promoted skills share canonical paths across Claude and Codex after repeated installation.`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
@@ -97,6 +116,7 @@ function run(args, cwd) {
     cwd,
     encoding: "utf8",
     windowsHide: true,
+    timeout: 120000,
     env: { ...process.env, NO_COLOR: "1", CI: "1" },
   });
   if (result.status !== 0) {

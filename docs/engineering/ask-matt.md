@@ -1,6 +1,6 @@
 ## What it does
 
-`ask-matt` is the retained upstream router over this collection. It returns a flow, not merely a skill name, and now includes the frontend design contract and continuity boundaries added by this derivative.
+`ask-matt` is the retained upstream router over this collection. It returns a flow, not merely a skill name, and includes this derivative's frontend design contract, continuity boundaries, and advisor-to-worker workflow.
 
 ## When to reach for it
 
@@ -22,6 +22,10 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 | Work must travel | activate Work Item ID → checkpoint-work → handoff → resume-work |
 
 ## Common questions
+
+**Do I have to keep asking for a structured prompt for another coding session?**
+
+No. Start [prompt-engineer](./prompt-engineer.md) for that workflow. It retains the advisory role through follow-ups, reviews compact results, and prepares the next scoped prompt. Shared report files can replace manual summary copying; it does not silently launch or control workers.
 
 **Why keep the upstream name in a universal derivative?**
 

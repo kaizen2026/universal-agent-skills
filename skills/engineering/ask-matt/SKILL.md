@@ -52,6 +52,8 @@ Not feature work — upkeep.
 
 ## Project steering
 
+- **`/prompt-engineer`** — advise other coding sessions: review their compact results and draft the next ready-to-paste assignment. Use this when the user wants a frontier advisor guiding separate workers, rather than implementation in this session. Shared report files reduce summary copying; live discovery is host-specific, observation is on demand by default, and dispatch is a separate authorized action. Keep this advisory role through follow-ups instead of making the user restate the formatting request each time.
+
 - **`/project-progress`** — turn a repository full of maps, plans, decisions, designs, prototypes, code, and validation records into one standalone interactive HTML dashboard. Use it whenever the written trail is too dense to answer “where are we?” quickly. Its **evidence ladder** keeps defined, designed, prototyped, implemented, validated, and operational progress separate, so a cleared decision map can never masquerade as a nearly built product. It updates only its model and generated view; it does not resolve the work it displays.
 
 ## Vocabulary underneath

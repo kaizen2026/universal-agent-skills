@@ -128,19 +128,20 @@ function status(project, args, io) {
   const thresholdError = safeThreshold.error;
   if (thresholdValue) {
     thresholdValue.source = suppliedWindow
-      ? "current explicit or detected context window"
+      ? "explicit input; not a measured host observation"
       : storedWindows.length === 1
         ? "stored setup input; current session window is unverified"
         : "configured default; current session window is unverified";
-    thresholdValue.currentSessionVerified = Boolean(suppliedWindow);
+    // This command receives configuration, not authenticated session telemetry.
+    thresholdValue.currentSessionVerified = false;
     thresholdValue.sourceTag = {
       contextWindow: suppliedWindow
-        ? "measured-current-session"
+        ? "explicit-input"
         : storedWindows.length === 1
           ? "configured-setup"
           : "unverified",
       policy: "configured-policy",
-      confidence: suppliedWindow || storedWindows.length === 1 ? "verified-capacity" : "unverified-capacity",
+      confidence: suppliedWindow || storedWindows.length === 1 ? "configured-capacity" : "unverified-capacity",
     };
   }
   const output = {

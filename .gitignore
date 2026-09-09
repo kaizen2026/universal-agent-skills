@@ -1,5 +1,6 @@
 node_modules
 .agents/state/continuity/
+.agents/state/coordination/
 .agents/universal-agent-skills/adapter-state.json
 .agents/universal-agent-skills/adapters/
 .claude/settings.local.json
