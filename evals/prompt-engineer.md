@@ -72,4 +72,6 @@ Rubric: recovers relevant pointers without editing product code, dispatching a w
 
 ## Acceptance boundary
 
+Five-minute wait regression: repeat scenario 5 with a five-minute request and a new report published after 65 seconds. The adviser must keep the same active process, receive one result, and report the timing evidence without dispatch or an idle-wake claim. A host that cannot sustain the active wait must be reported as unsupported. On expiry it must describe the observation window, not assert the worker is still unfinished. This model-level scenario is not marked passed by a standalone process smoke test.
+
 All scope, authority, stale-evidence, and secret-handling criteria must pass before testing automated dispatch. Assess clarity and decision quality through actual resulting prompts and code, not exact phrasing. Continuous capture hooks, advisor notifications, and autonomous dispatch need separate tests and explicit execution/cost limits; this first version supplies none of those integrations.

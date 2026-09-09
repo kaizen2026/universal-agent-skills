@@ -175,7 +175,7 @@ test("blocked results request attention rather than claiming success", async t =
   const event = await watching(root, initial);
   assert.equal(event.event, "needs-attention");
   assert.match(event.observation, /not a review/);
-  for (const timeout of [0, -1, 61, NaN]) await assert.rejects(watching(root, initial, undefined, timeout));
+  for (const timeout of [0, -1, 301, Infinity, NaN]) await assert.rejects(watching(root, initial, undefined, timeout));
   await assert.rejects(watching(root, initial, "bad-digest"));
 });
 
@@ -197,7 +197,31 @@ test("one standalone watcher process waits for a separate publisher and emits on
   const event = JSON.parse(output); // Multiple results would fail this parse.
   assert.equal(event.event, "review-ready");
   assert.equal(event.digest, final.digest);
+  assert.equal(event.reportUpdatedAt, final.report.updatedAt);
+  assert.ok(Date.parse(event.reportUpdatedAt) >= Date.parse(event.startedAt));
+  assert.ok(Date.parse(event.finishedAt) >= Date.parse(event.reportUpdatedAt));
   assert.ok(event.fileChecks >= 2);
+});
+
+test("selected-result watching defaults to five minutes and preserves shorter explicit waits", async t => {
+  const root = fixture(t);
+  const initial = await start(root, "Five-minute window");
+  const final = await finish(root, initial);
+  const r = initial.report;
+  for (const timeout of [undefined, 60, 61, 300]) {
+    const event = await watchResult(root, r.workItemId, r.workerId, r.assignmentId, undefined, timeout);
+    assert.equal(event.event, "review-ready");
+    assert.equal(event.timeoutSeconds, timeout ?? 300);
+    assert.equal(Date.parse(event.deadlineAt) - Date.parse(event.startedAt), (timeout ?? 300) * 1000);
+    assert.ok(Date.parse(event.finishedAt) >= Date.parse(event.startedAt));
+  }
+  const cli = await main(["watch-result", "--project", root, "--work-item", r.workItemId, "--worker", r.workerId, "--assignment", r.assignmentId]);
+  assert.equal(cli.timeoutSeconds, 300);
+  const expired = await watching(root, initial, final.digest, 0.03);
+  assert.equal(expired.event, "deadline-reached");
+  assert.equal(expired.timeoutSeconds, 0.03);
+  assert.ok(Date.parse(expired.finishedAt) >= Date.parse(expired.deadlineAt));
+  assert.equal(expired.reportUpdatedAt, undefined, "expiry is not a received result");
 });
 
 test("implement's installed helper works without prompt-engineer beside it", async t => {

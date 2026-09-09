@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const MAX_BYTES = 16384;
+const MAX_WATCH_SECONDS = 300;
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const statuses = new Set(["working", "blocked", "ready-for-review", "complete"]);
 const outcomes = new Set(["passed", "failed", "unverified"]);
@@ -131,9 +132,9 @@ export function read(project, workItem, worker) {
   return { observation: "Unverified worker claims; reconcile assignment, commit, diff, and checks before acting.", digest: digest(semantic(report)), report };
 }
 
-export async function watch(project, workItem, after, timeoutSeconds = 60, intervalMs = 500) {
+export async function watch(project, workItem, after, timeoutSeconds = MAX_WATCH_SECONDS, intervalMs = 500) {
   if (!/^[a-f0-9]{64}$/.test(after || "")) throw new Error("--after must be the digest returned by status.");
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 60) throw new Error("--timeout must be greater than zero and at most 60 seconds.");
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > MAX_WATCH_SECONDS) throw new Error("--timeout must be greater than zero and at most 300 seconds (5 minutes).");
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (true) {
     const current = status(project, workItem);
@@ -268,13 +269,16 @@ export async function publish(project, workItem, worker, assignment, expected, w
   return writeReport(project, patch, expected);
 }
 
-export async function watchResult(project, workItem, worker, assignment, after, timeoutSeconds = 60, intervalMs = 500) {
+export async function watchResult(project, workItem, worker, assignment, after, timeoutSeconds = MAX_WATCH_SECONDS, intervalMs = 500) {
   identity(workItem); identity(worker); identity(assignment);
   rootFor(project, workItem);
   if (after !== undefined && !/^[a-f0-9]{64}$/.test(after)) throw new Error("--after must be the selected report digest from read or watch-result.");
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 60) throw new Error("--timeout must be greater than zero and at most 60 seconds.");
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > MAX_WATCH_SECONDS) throw new Error("--timeout must be greater than zero and at most 300 seconds (5 minutes).");
   if (!Number.isFinite(intervalMs) || intervalMs < 5) throw new Error("Watch interval must be at least 5 milliseconds.");
   const started = performance.now(), deadline = started + timeoutSeconds * 1000;
+  const wallStart = Date.now();
+  const timing = () => ({ startedAt: new Date(wallStart).toISOString(), deadlineAt: new Date(wallStart + timeoutSeconds * 1000).toISOString(),
+    finishedAt: new Date().toISOString(), timeoutSeconds, elapsedMs: Math.round(performance.now() - started) });
   let checks = 0, lastIssue;
   while (true) {
     checks++;
@@ -284,13 +288,13 @@ export async function watchResult(project, workItem, worker, assignment, after, 
       lastIssue = undefined;
       if (report.assignmentId === assignment && selected.digest !== after && ["blocked", "ready-for-review", "complete"].includes(report.status)) {
         return { event: report.status === "blocked" ? "needs-attention" : "review-ready", workItemId: workItem, workerId: worker, assignmentId: assignment,
-          reportedStatus: report.status, digest: selected.digest, path: join(rootFor(project, workItem), `${worker}.json`),
-          observation: "Unverified worker result. Notification is not a review, a successful task, or a live session signal.", fileChecks: checks, elapsedMs: Math.round(performance.now() - started) };
+          reportedStatus: report.status, reportUpdatedAt: report.updatedAt, digest: selected.digest, path: join(rootFor(project, workItem), `${worker}.json`),
+          observation: "Unverified worker result. Notification is not a review, a successful task, or a live session signal.", fileChecks: checks, ...timing() };
       }
     } catch (error) {
       lastIssue = error.code === "ENOENT" ? "No report yet." : redact(error.message);
     }
-    if (performance.now() >= deadline) return { event: "deadline-reached", workItemId: workItem, workerId: worker, assignmentId: assignment, fileChecks: checks, elapsedMs: Math.round(performance.now() - started), ...(lastIssue ? { lastIssue } : {}) };
+    if (performance.now() >= deadline) return { event: "deadline-reached", workItemId: workItem, workerId: worker, assignmentId: assignment, fileChecks: checks, ...timing(), ...(lastIssue ? { lastIssue } : {}) };
     await delay(Math.min(intervalMs, Math.max(0, deadline - performance.now())));
   }
 }
@@ -299,7 +303,7 @@ export async function main(argv) {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help") {
     return { usage: "discover|snapshot|start|publish|status|read|watch|watch-result --project PATH [--help]", effects: "Only start/publish write reports; start also adds their Git ignore. No network, model calls, dispatch, hooks, or daemon.",
-      commands: { discover: "[--query TEXT]", snapshot: "Current Git fingerprint, not validation", start: "--task TITLE [--source REF --work-item ID --worker ID --assignment ID --shared-project PATH --harness NAME --session ID]", publish: "--work-item ID --worker ID --assignment ID --expected-digest DIGEST --workspace PATH --input FILE", read: "--work-item ID --worker ID", status: "--work-item ID", watch: "--work-item ID --after STATUS_DIGEST [--timeout 60] (legacy metadata watch)", "watch-result": "--work-item ID --worker ID --assignment ID [--after REPORT_DIGEST --timeout 60]" } };
+      commands: { discover: "[--query TEXT]", snapshot: "Current Git fingerprint, not validation", start: "--task TITLE [--source REF --work-item ID --worker ID --assignment ID --shared-project PATH --harness NAME --session ID]", publish: "--work-item ID --worker ID --assignment ID --expected-digest DIGEST --workspace PATH --input FILE", read: "--work-item ID --worker ID", status: "--work-item ID", watch: "--work-item ID --after STATUS_DIGEST [--timeout 300] (legacy metadata watch)", "watch-result": "--work-item ID --worker ID --assignment ID [--after REPORT_DIGEST --timeout 300]" } };
   }
   const flags = {
     discover: ["--query"], snapshot: [],
@@ -329,8 +333,8 @@ export async function main(argv) {
   }
   if (command === "status") return status(args["--project"], args["--work-item"]);
   if (command === "read") return read(args["--project"], args["--work-item"], args["--worker"]);
-  if (command === "watch") return watch(args["--project"], args["--work-item"], args["--after"], Number(args["--timeout"] ?? 60));
-  if (command === "watch-result") return watchResult(args["--project"], args["--work-item"], args["--worker"], args["--assignment"], args["--after"], Number(args["--timeout"] ?? 60));
+  if (command === "watch") return watch(args["--project"], args["--work-item"], args["--after"], Number(args["--timeout"] ?? MAX_WATCH_SECONDS));
+  if (command === "watch-result") return watchResult(args["--project"], args["--work-item"], args["--worker"], args["--assignment"], args["--after"], Number(args["--timeout"] ?? MAX_WATCH_SECONDS));
   throw new Error("Unknown command; use help to list commands.");
 }
 

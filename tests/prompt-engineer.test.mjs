@@ -139,7 +139,8 @@ test("bounded watch returns changed metadata or a deadline without model or netw
   assert.equal(changed.changed, true);
   assert.equal(changed.reports[0].reportedStatus, "blocked");
   assert.notEqual(changed.digest, baseline);
-  for (const timeout of [0, 61, NaN]) await assert.rejects(watch(root, "issue-42", baseline, timeout));
+  for (const timeout of [0, 301, NaN]) await assert.rejects(watch(root, "issue-42", baseline, timeout));
+  for (const timeout of [61, 300]) assert.equal((await watch(root, "issue-42", baseline, timeout)).changed, true);
   await assert.rejects(watch(root, "issue-42", "not-a-digest", 1));
 });
 

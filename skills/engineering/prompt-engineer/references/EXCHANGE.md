@@ -64,12 +64,16 @@ Version 2 adds `task`, `session`, `baseHead`, `baseTreeDigest`, `treeDigest`, `c
 ## Wait for one selected result
 
 ```text
-node "<skill-directory>/scripts/exchange.mjs" watch-result --project "<shared-project>" --work-item "<id>" --worker "<id>" --assignment "<id>" --timeout 60
+node "<skill-directory>/scripts/exchange.mjs" watch-result --project "<shared-project>" --work-item "<id>" --worker "<id>" --assignment "<id>" --timeout 300
 ```
 
 After already reviewing a result, add `--after "<reviewed report digest>"` to suppress that result and timestamp-only rewrites. `ready-for-review`/`complete` returns `review-ready`; `blocked` returns `needs-attention`. Working state, other workers, other assignments, partial JSON, and unchanged results do not trigger review. At the deadline it returns once with `deadline-reached`; this does not mean the worker failed.
 
-The process checks only local files (every 500 ms by default), without model calls, and emits one bounded result. The model spends tokens starting the wait and handling its result, then on any review/prompt. Use the host's background/wait tool for this one process; do not run a model-driven status loop or automatically rearm the wait at every timeout. Maximum per call: 60 seconds. State the expiry and leave a manual follow-up if needed.
+The process repeatedly checks only local files (every 500 ms by default), without model calls, and emits one bounded result. Default and maximum per call: 300 seconds (five minutes); shorter positive `--timeout` values remain supported. The model spends tokens starting the wait and handling tool results, then on any review/prompt. Use the host's background/wait tool for this one process; do not run a model-driven status loop or automatically rearm the wait at every timeout. If the host yields a process handle, follow that same process with its supported wait mechanism, not a fresh watcher; acknowledge any model/tool overhead instead of promising zero total tokens. If a five-minute active wait is unsupported, report that limitation. Cancelling the selected process ends observation; no daemon is left behind.
+
+`watch-result` returns UTC `startedAt`, `deadlineAt`, `finishedAt`, configured `timeoutSeconds`, monotonic `elapsedMs`, and local `fileChecks`. A received result also includes the worker's claimed `reportUpdatedAt`. Compare these when investigating a timeout; wall-clock changes and worker timestamps are not independent proof of timing. State only that no new selected finished result was observed during the window, not that the worker remains unfinished now. To wait for a FUTURE update, first read the CURRENT report and pass its digest as `--after`, even if the current completed result has not previously been reviewed.
+
+The file checks already repeat throughout the window. Repeating whole windows later is different: it needs a separately authorized overall duration/stop policy and a supported active-turn or scheduler integration. No such scheduler is installed. Do not translate “can it recheck?” into permission to enable indefinite monitoring, hooks, or repeated AI turns.
 
 An active tool wait can return control to the adviser. An idle or ended adviser conversation does NOT wake from this helper alone. No automatic prompt dispatch is provided.
 

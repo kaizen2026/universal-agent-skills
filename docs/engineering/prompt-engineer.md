@@ -31,7 +31,15 @@ Yes, when both sessions can read the same directory. A normal [implement](./impl
 
 **Can it watch without spending frontier-model tokens?**
 
-The local watcher checks one selected worker and assignment without model calls. It waits up to 60 seconds and returns once: a result ready for review, a blocker needing attention, or a deadline. Working updates, malformed files, and timestamp-only duplicates do not cause repeated reviews. Starting the wait, reading its result, reviewing code, and writing the next prompt still consume tokens. A completed chat does not wake on file changes without a host integration, and the advisor does not silently restart an expired wait.
+The local watcher repeatedly checks one selected worker and assignment without model calls. It waits up to five minutes by default, or a shorter duration you request, and returns once: a result ready for review, a blocker needing attention, or a deadline. Working updates, malformed files, and timestamp-only duplicates do not cause repeated reviews. Starting the wait, handling tool results, reviewing code, and writing the next prompt still consume tokens. The host must support keeping the active wait attached to the process; a completed chat does not wake on file changes without a separate integration.
+
+**Can it check again by itself after a few minutes?**
+
+Within the five-minute window, it already checks repeatedly; the AI is not asked the same question each time. After expiry, this version stops. Repeated windows could be added with a separate schedule and an overall stop limit, but that is not enabled here. Asking the AI to start another wait uses model tokens; a deterministic program checking files does not itself call a model.
+
+**It timed out, but the coder says it finished. Is the watcher broken?**
+
+The report may have been published after the wait ended. Watcher results now include start, deadline, finish, and received-report times to help check that. The deadline means no new result was observed during that window, not that the coder is still unfinished. A new on-demand read can recover a later result; it is not evidence that the earlier watch received it.
 
 **Does it know every session I have open?**
 
