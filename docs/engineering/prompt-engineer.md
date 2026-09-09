@@ -11,6 +11,7 @@ Invoke `$prompt-engineer` in Codex or `/prompt-engineer` with Claude's standalon
 - Use it to turn a worker's result into a reviewed next assignment.
 - Use it to prepare a bounded task for a less expensive coder.
 - Use it to read shared worker reports instead of copying summaries between chats.
+- Use it to explain another coder's last-reported Done / Now / Next / Blocked state without taking over implementation.
 - Use [implement](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/implement/SKILL.md) when you want the current session to do the coding itself.
 
 ## Prerequisites
@@ -32,6 +33,14 @@ Yes, when both sessions can read the same directory. A normal [implement](./impl
 **Can it watch without spending frontier-model tokens?**
 
 The local watcher repeatedly checks one selected worker and assignment without model calls. It waits up to five minutes by default, or a shorter duration you request, and returns once: a result ready for review, a blocker needing attention, or a deadline. Working updates, malformed files, and timestamp-only duplicates do not cause repeated reviews. Starting the wait, handling tool results, reviewing code, and writing the next prompt still consume tokens. The host must support keeping the active wait attached to the process; a completed chat does not wake on file changes without a separate integration.
+
+**Can I ask it to check a task file after its earlier reply has finished?**
+
+Yes. That starts an ordinary follow-up: it reads the selected task and report again. A fresh adviser can do the same when it has access to those files. A vague "latest finished task" request needs clarification when several tasks plausibly match; the newest file alone is not enough.
+
+**Can it see what the coder is doing before the task finishes?**
+
+Updated [implement](./implement.md) runs save a small step checklist in the same shared worker report. The adviser can summarize completed, current, next, and blocked steps, with the last-reported time. Older reports may have only a summary. Neither a saved active step nor a checked box proves a live session or passing tests. Progress reads stay advisory and do not automatically trigger another code review.
 
 **Can it check again by itself after a few minutes?**
 
@@ -56,6 +65,7 @@ It prepares the prompt and follows your chosen models. Launching or steering ano
 - A fresh advisor can join after implementation, without an earlier advisor-created assignment.
 - A stale assignment, failing check, or missing evidence changes the recommendation.
 - Unchanged reports do not trigger repeated expensive analysis.
+- Asking about progress returns the selected task's last-reported steps, or honestly says detailed progress was not recorded.
 - Each worker knows what it can edit and when to stop.
 
 ## Where it fits

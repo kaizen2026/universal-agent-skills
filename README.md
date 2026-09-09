@@ -71,6 +71,8 @@ Implementation publishes a compact result under `.agents/state/coordination/<wor
 
 ## What v1 adds
 
+Implementation also maintains a small task checklist from an ordinary task/spec prompt. It uses Claude Code's native Task tools or another host's available plan tool, and saves milestone progress in the shared worker report for later adviser reads. Without native tools, shared progress and brief chat updates remain available; no settings are changed to force a panel. Progress updates do not trigger the finished-result watcher. See [visible implementation progress](./docs/engineering/implement.md). Both worker and adviser should use the updated skills before exchanging new v3 checklist reports; v1/v2 reports remain readable.
+
 ### Frontend design from decision to review
 
 ```text
@@ -170,6 +172,6 @@ The validator checks the portable Agent Skills name, description, layout, and re
 
 The [advisor behavioral scenarios](./evals/prompt-engineer.md) define the next model-quality evaluation. They are not marked passed by the deterministic suite, and running them does not authorize worker dispatch or paid sessions by itself.
 
-The exchange helper and contract are maintained in `prompt-engineer` and bundled into `implement` for independent installation. After editing their source, run `npm run sync-exchange`; `npm test` rejects a stale bundle. Run `node scripts/advisor-watch-smoke.mjs --helper "<installed-skill>/scripts/exchange.mjs"` to exercise one installed watcher and a separate simulated publisher without model calls. Add `--publish-delay 65` to verify delivery after the old one-minute cutoff, inside the new five-minute window.
+The exchange helper and contract are maintained in `prompt-engineer` and bundled into `implement` for independent installation. After editing their source, run `npm run sync-exchange`; `npm test` rejects a stale bundle. Run `node scripts/advisor-watch-smoke.mjs --helper "<installed-skill>/scripts/exchange.mjs"` to exercise one installed watcher and a separate simulated publisher without model calls. Add `--publish-delay 65` to verify delivery after the old one-minute cutoff, inside the new five-minute window. Run `node scripts/task-progress-smoke.mjs --helper "<installed-skill>/scripts/exchange.mjs"` to check recoverable checklist state, working-update suppression, final delivery, and unrelated-worker preservation. Neither smoke test establishes native task-list rendering or model behavior.
 
 To incorporate upstream work, fetch `upstream`, review the changes against this derivative's integration points, and preserve upstream commits when merging. Do not squash away attribution.

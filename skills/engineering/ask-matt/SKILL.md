@@ -24,6 +24,8 @@ The route most work travels. You have an idea and want it built.
 
    Either way, **`/implement`** builds each issue by driving **`/tdd`** internally and invokes **`/frontend-build`** when an approved design contract governs the UI. It closes out with **`/code-review`**: independent Standards and Spec lanes plus **`/frontend-review`** when UI changed. Reach for these model-invoked skills directly when only that discipline is needed.
 
+   **Visible execution progress is part of `/implement`.** It creates the task's checklist, uses native Task/plan tools when exposed, and saves milestone changes in its worker report for the developer and adviser. No specially numbered task prompt is required. Without native tools, it keeps shared progress and brief chat updates; it does not change settings to force a display. For another worker's Done / Now / Next / Blocked state, route to `/prompt-engineer`; the project-wide dashboard remains `/project-progress`.
+
 ### Context hygiene
 
 Keep steps 1–3 in **one unbroken context window** — don't compact or clear until after `/to-tickets` — so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.

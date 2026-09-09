@@ -51,7 +51,13 @@ try {
   const probe = spawnSync(process.execPath, [join(advisorDirectory, "scripts", "exchange.mjs"), "status", "--project", project, "--work-item", "smoke"], { encoding: "utf8", windowsHide: true });
   assert.equal(probe.status, 0, probe.stderr);
   assert.deepEqual(JSON.parse(probe.stdout).reports, []);
+  const implementDirectory = join(installed.installPath, "skills", "engineering", "implement");
+  assert.ok(readFileSync(join(implementDirectory, "references", "TASK-PROGRESS.md")).equals(readFileSync(join(repository, "skills", "engineering", "implement", "references", "TASK-PROGRESS.md"))), "native checklist instructions must be present in the plugin cache");
+  const progressProbe = spawnSync(process.execPath, [join(repository, "scripts", "task-progress-smoke.mjs"), "--helper", join(implementDirectory, "scripts", "exchange.mjs")], { encoding: "utf8", windowsHide: true, timeout: 30000 });
+  assert.equal(progressProbe.status, 0, progressProbe.stderr);
+  assert.equal(JSON.parse(progressProbe.stdout).result, "passed");
   console.log(`Claude Code 2.1.266: marketplace and plugin validated; ${manifest.skills.length} skills installed in an isolated config. No model calls made.`);
+  console.log("Installed Implement checklist instructions and v3 progress exchange passed; native model invocation/rendering is not tested.");
   if (warnings.length) console.log("Expected authoring note: root CLAUDE.md is repository guidance, not consumer context.");
 } finally {
   rmSync(scratch, { recursive: true, force: true });

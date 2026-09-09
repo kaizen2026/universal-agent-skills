@@ -23,6 +23,10 @@ Tracker-dependent routes assume [setup-universal-agent-skills](https://github.co
 
 ## Common questions
 
+**Which skill keeps the coder's task checklist visible?**
+
+[implement](./implement.md) creates the task's execution checklist, uses native Task/plan tools when available, and saves progress at step changes. It falls back to shared progress and short chat updates when the host has no native view. [prompt-engineer](./prompt-engineer.md) reads another worker's progress; [project-progress](./project-progress.md) remains the broader project dashboard. No special numbered prompt or automatic settings change is required.
+
 **Do I have to keep asking for a structured prompt for another coding session?**
 
 No. Use [prompt-engineer](./prompt-engineer.md) for that workflow, including after a normal implementation has already finished. It finds the matching result and source decisions, retains the advisory role through follow-ups, and prepares the next scoped prompt. Implementation now publishes the report without an adviser-first assignment. A requested bounded wait checks files repeatedly for up to five minutes without model-driven polling, then stops. Automatic repeat windows, idle-chat wake-up, and prompt dispatch are not connected.

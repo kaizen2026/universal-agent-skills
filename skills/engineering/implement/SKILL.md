@@ -10,6 +10,16 @@ Before changing implementation files, record the current `HEAD` as the review fi
 
 Read [the exchange contract](references/EXCHANGE.md) and use this skill's bundled `scripts/exchange.mjs start` to record the task/source and starting evidence. Keep its returned report path, IDs, and digest. This is ordinary implementation closeout preparation: no adviser-created assignment or separate setup is required. Use only known session identities; generate protocol IDs with the helper, not a user questionnaire. If a shared root was explicitly selected for separate worktrees, use it. If reporting cannot run or local state writes are forbidden, retain a compact chat fallback and say shared publication is unavailable.
 
+## Keep task progress visible
+
+Create a concise execution checklist from the authorized task before implementation, even when the user supplies only a normal prompt or spec rather than numbered Markdown instructions. Use meaningful steps sized to the work; a small task needs only a small list. Do not add shipping, merging, or unrelated work merely to fill the checklist.
+
+Read [TASK-PROGRESS.md](references/TASK-PROGRESS.md). Use the available native task-list tool, especially Claude Code's Task tools, rather than merely printing checkboxes in chat. Persist the same steps in this worker's shared report using `progress`. Native display is a view of those execution claims, not a separate source of task authority. If native tools are absent, keep shared progress and a brief Done / Now / Next / Blocked chat fallback; never invent tools, alter settings, or block implementation solely for the display.
+
+Update at meaningful step transitions, not every command or timer tick. Maintain one current high-level step, record blockers honestly, and keep completed work visible. Before resuming a step, reconcile the task/source and saved progress with actual files and current instructions. Respect any explicit source re-read requirement; do not copy whole task documents into every update. At completion, reconcile the checklist before publishing the result; an unfinished required step is not complete just because the model's reply ended.
+
+## Implement and verify
+
 Classify frontend work before changing it:
 
 - If the issue/spec references an approved `docs/design/<feature>/DESIGN.md`, or an approved contract clearly governs the feature, invoke `/frontend-build` and treat that contract as the visual source of truth.

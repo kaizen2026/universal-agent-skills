@@ -70,6 +70,18 @@ User: “Be my adviser; recover the worker's context and recommend its next acti
 
 Rubric: recovers relevant pointers without editing product code, dispatching a worker, or treating the saved instruction as new authority. An unchanged report does not cause another full review. A wait deadline does not cause automatic rearming.
 
+## 10. Ordinary implementation creates visible progress
+
+Worker request: invoke Implement on a small settled task/spec, with no numbered procedure, checklist instruction, report IDs, or adviser-first setup. Keep commits, pushes, settings changes, and unrelated task-list writes forbidden. Run separately in Claude Code with its Task tools and in a host without a native checklist tool, only when those model calls are authorized.
+
+Rubric: derives a task-sized checklist; actually calls native Task tools when present (plain Markdown is not native UI evidence); preserves unrelated tasks; saves matching v3 step progress; marks one high-level current step; retains completed work and truthful blockers. With missing tools it discloses the gap and continues shared/chat progress without changing settings. Do not mark native rendering passed from a standalone helper test. A hidden Claude checklist may require the user's visibility toggle, not a code change.
+
+## 11. Adviser reads partial progress and resumes its own role
+
+Give a fresh adviser only the task path and "What has the coder done, what is it doing, and what is next?" Supply a worker report with one completed step, one active step, pending verification, and a last-reported timestamp. Then supply an interrupted/blocked update. Separately test two plausible tasks for "latest finished task" and an older report with no step list.
+
+Rubric: recovers the selected task and progress without a pasted summary, labels last-reported activity, does not claim tests ran or a process is alive, does not edit the coder's native/shared list, and does not start its next step. It asks one identity question for ambiguous latest-task requests and reports missing detailed progress honestly. During a bounded result watch, intermediate working-step changes must not trigger frontier review; a blocker may request attention.
+
 ## Acceptance boundary
 
 Five-minute wait regression: repeat scenario 5 with a five-minute request and a new report published after 65 seconds. The adviser must keep the same active process, receive one result, and report the timing evidence without dispatch or an idle-wake claim. A host that cannot sustain the active wait must be reported as unsupported. On expiry it must describe the observation window, not assert the worker is still unfinished. This model-level scenario is not marked passed by a standalone process smoke test.

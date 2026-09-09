@@ -4,6 +4,8 @@
 
 It implements settled decisions instead of reopening the design. A genuinely ambiguous task reference or missing authority still needs clarification. It respects instructions such as “do not commit,” and saves a compact result for a later adviser without requiring you to ask for a report. That is what separates it from typing "build this" at a fresh [agent](https://www.aihero.dev/ai-coding-dictionary/agent).
 
+Visible progress is part of a normal run: it derives a small checklist from the task, keeps the available native task view current, and saves milestone progress for another session to read. You do not need a specially numbered task prompt to request that behavior.
+
 ## When to reach for it
 
 You invoke this by typing `/implement` — the agent won't reach for it on its own. It ships with `disable-model-invocation: true`, so no other skill can call it either. Wherever [ask-matt](https://aihero.dev/skills-ask-matt) or [to-tickets](https://aihero.dev/skills-to-tickets) says "then `/implement` per ticket", that is an instruction to you, not something the agent will do unprompted.
@@ -32,7 +34,7 @@ If the tickets came from [to-tickets](https://aihero.dev/skills-to-tickets), the
 
 A run is six beats, in order:
 
-1. Resolve the task, record starting `HEAD` and existing dirty changes, and create its small local working report. An unborn branch stays `unknown`; no commit is invented.
+1. Resolve the task, record starting `HEAD` and existing dirty changes, create its small local working report, and initialize the task checklist. An unborn branch stays `unknown`; no commit is invented.
 2. For governed frontend work, invoke [frontend-build](https://github.com/kaizen2026/universal-agent-skills/blob/main/skills/engineering/frontend-build/SKILL.md) against the approved design contract; route only an unresolved visual decision back to `frontend-design`.
 3. Drive [tdd](https://aihero.dev/skills-tdd) at the pre-agreed seams, one red-green slice at a time.
 4. Typecheck often, run single test files as it goes.
@@ -41,6 +43,8 @@ A run is six beats, in order:
 
 One run covers one ticket. The tickets [to-tickets](https://aihero.dev/skills-to-tickets) produces are tracer-bullet vertical slices sized to fit a single fresh [context window](https://www.aihero.dev/ai-coding-dictionary/context-window), so the intended rhythm is: clear context, implement one ticket, commit, clear again. Each ticket is self-contained, which is what makes the previous ticket's context disposable.
 
+The checklist follows this task's actual scope, not a compulsory six-item template. It updates at meaningful step changes and keeps completed, current, upcoming, and blocked work visible. The shared worker report owns the recorded progress; a checked item does not independently prove tests or close a tracker ticket.
+
 ## Pre-agreed seams
 
 The idea the skill runs on is the **seam**: the public boundary you observe behaviour at, without reaching inside. Tests live at seams. Working at a seam agreed before any code is written is what keeps the tests durable, because the implementation underneath can be rewritten without the tests moving.
@@ -48,6 +52,22 @@ The idea the skill runs on is the **seam**: the public boundary you observe beha
 The word "pre-agreed" is doing real work, and it is also the skill's weakest joint. Nothing inside `implement` agrees the seams. `tdd` is the skill that asks, and it refuses to write a test at an unconfirmed seam. So in practice the agreement happens either upstream in the spec, or in the first exchange of the run. If it happens nowhere, the precondition never fires and the run quietly becomes "just write the code". Naming the seams in the spec is what stops that.
 
 ## Common questions
+
+**Why does Claude sometimes show a task checklist, but ordinary prompting does not?**
+
+The native task tools create that display; numbered prose alone does not guarantee it. `implement` now explicitly uses the available Task tools and keeps their steps in the shared report. Claude's [task-list view](https://code.claude.com/docs/en/interactive-mode#task-list) can be shown or hidden with `Ctrl+T`.
+
+**Will this still work when I switch between Claude Code and Codex?**
+
+- With native Task or plan tools, the skill updates that host's checklist. The layouts need not match.
+- Without those tools, it saves the same shared progress and gives short Done / Now / Next / Blocked updates in chat.
+- If shared file writes are unavailable too, it says so and keeps a compact chat fallback.
+
+Some Claude model/session configurations [omit the task tools](https://code.claude.com/docs/en/tools-reference#task-tool-availability). The skill reports that limitation without changing your settings. Both adviser and coder need the updated helper to read new structured progress; existing older reports remain readable.
+
+**Will each checkbox change wake the adviser and spend more tokens?**
+
+No. Normal in-progress updates do not trigger the result watcher. The coder saves progress when steps change, not every few seconds. You can ask the adviser for progress at any time; a finished or blocked report remains the review boundary. The coder's updates and adviser reads still use tokens, so this is not a zero-cost feature.
 
 **It finished, but my ticket is still open and the acceptance criteria are still unchecked.**
 
@@ -86,6 +106,8 @@ No. The result is saved under `.agents/state/coordination/` even without an advi
 - Typechecks and single test files run repeatedly during the run, and the full suite runs once near the end.
 - The run reaches a scoped commit, or leaves changes uncommitted when you requested that.
 - The final reply names the shared result file or explicitly explains why reporting was unavailable.
+- You can see the current step and what remains, through a native checklist or its stated fallback, without asking for a plan repeatedly.
+- A later adviser can read progress without the coder's transcript, and unavailable checks are not presented as completed work.
 - The diff is one ticket's worth of change: a vertical slice through every layer, not several tickets swept together.
 
 ## Where it fits

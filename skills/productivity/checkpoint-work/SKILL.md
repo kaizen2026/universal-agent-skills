@@ -27,4 +27,6 @@ Lifecycle hooks cannot infer the live objective, decisions, test meaning, or nex
 
 For adviser/worker work, use existing binding decisions and authority pointers to retain the current role, task source, selected report path/assignment, and last reviewed digest. Do not duplicate the report or add a parallel memory schema. Keep an adviser's recommended worker action distinct from permission for the resumed adviser to perform it.
 
+When an implementation checklist exists, point to that worker report and its current stable step ID. Keep the capsule's current phase and next action consistent at checkpoint boundaries without copying the entire step list or recording native UI task IDs as portable session identity.
+
 Report the checkpoint path, timestamp, validation evidence captured, and any information deliberately omitted for safety.

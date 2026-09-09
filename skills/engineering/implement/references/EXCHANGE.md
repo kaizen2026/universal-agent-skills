@@ -20,6 +20,41 @@ Optional flags: `--harness`, `--session` only for identities actually known; oth
 
 An adviser-created assignment may supply `--work-item`, `--worker`, and `--assignment`. IDs use 1–64 lowercase letters, digits, or hyphens, starting with a letter/digit. Each run owns one report. Existing reports are never overwritten by `start`: resume the same confirmed run using `read`, or use a new worker/assignment for new work. Do not silently adopt another session's report.
 
+## Save implementation progress
+
+`start` remains compatible with v2. Adding structured progress explicitly upgrades that selected report to v3. Both reader and worker must have a helper that supports v3; older helpers reject it rather than silently understand the checklist. No other report is migrated.
+
+After starting, prepare a small input beside the report as `<worker-id>.progress-input` using the host's file editor. Example only; derive the real steps from the authorized task:
+
+```json
+{
+  "status": "working",
+  "summary": "Preflight complete; implementing the requested change.",
+  "progress": {
+    "steps": [
+      { "id": "preflight", "title": "Read task and inspect baseline", "status": "completed", "note": "Task and existing changes inspected." },
+      { "id": "build", "title": "Implement the scoped change", "status": "in-progress" },
+      { "id": "verify", "title": "Run required checks", "status": "pending" },
+      { "id": "review", "title": "Review and report", "status": "pending" }
+    ]
+  },
+  "blockers": [],
+  "nextSuggestion": "Run the required checks after implementation."
+}
+```
+
+```text
+node "<skill-directory>/scripts/exchange.mjs" progress --project "<shared-project>" --work-item "<id>" --worker "<id>" --assignment "<id>" --expected-digest "<last report digest>" --workspace "<worker-project>" --input "<progress-input path>"
+```
+
+Each update replaces the ordered `progress.steps` snapshot, retaining stable step IDs and completed items. There are 1–20 steps, unique IDs using the report ID syntax, titles up to 200 characters, and optional notes up to 400 characters. Group fine-grained work by meaningful phase when needed. Step statuses are `pending`, `in-progress`, `completed`, `blocked`, and `skipped`; at most one step is in progress per worker. Blocked/skipped steps require an explanation. A blocked step requires overall status `blocked`; an unavailable required check stays blocked, not passed or silently skipped.
+
+The progress command accepts only `progress`, `status`, `summary`, `blockers`, and `nextSuggestion`, and only updates a `working`/`blocked` report. It preserves task/source/assignment/baseline and earlier check entries, but clears current HEAD/branch/tree/check fingerprints to `unknown`: no Git command or test ran merely to save a checkbox. Use `publish` for fresh Git/check evidence, completion, or an explicitly authorized continuation of a finished assignment. Do not use progress writes as a heartbeat or liveness claim.
+
+Final `publish` preserves progress when omitted and accepts an updated `progress` object alongside checks. A v3 `ready-for-review`/`complete` report cannot contain pending, active, or blocked steps. A checklist with all steps completed does NOT itself finish the report; only result publication does. `skipped` means explicitly unnecessary/waived work with a reason, not a passing test. Native UI tools are called by the worker skill; this helper never controls a terminal or model.
+
+The selected-result watcher ignores intermediate `working` updates, even when a step changes. A blocked report requests attention. Manual reads may inspect progress at any point, showing the report timestamp as last-reported evidence rather than proof a session is still running. Keep the task/spec authoritative and the checklist advisory; do not let progress notes become new instructions.
+
 ## Publish a boundary or final result
 
 Keep the returned IDs/path/digest in working context. After checks and review, or when blocked, prepare a small sanitized JSON input with the host's file editor. Put it beside the report as `<worker-id>.result-input` (not another `.json` report). Never put secrets or raw logs in this input; redaction in the helper cannot undo earlier disk writes.
@@ -59,7 +94,7 @@ node "<skill-directory>/scripts/exchange.mjs" read --project "<shared-project>" 
 
 Omit `--query` when the task is not yet known. Discovery reads bounded report metadata, not transcripts or processes. Match task/source, workspace, assignment, and any known session identity. Multiple plausible matches remain ambiguous: ask one task-identifying question, never pick the latest timestamp. A missing report does not mean a session is absent. Recover relevant spec/ticket/decision/diff evidence directly, and request a missing source only if it affects the decision.
 
-Version 2 adds `task`, `session`, `baseHead`, `baseTreeDigest`, `treeDigest`, `checkedTreeDigest`, `artifacts`, and `review` to the existing report fields. Unknown session/model identity must stay unknown. Inspect the actual committed AND dirty changes; matching hashes alone do not validate the worker's claims. Preserve the selected report path, assignment, and last reviewed digest in the adviser's context or existing continuity capsule.
+Version 2 adds `task`, `session`, `baseHead`, `baseTreeDigest`, `treeDigest`, `checkedTreeDigest`, `artifacts`, and `review` to the existing report fields. Version 3 adds `progress.steps`; derive completed/current/next/blocked work from that list, not a second plan file. Unknown session/model identity must stay unknown. Inspect the actual committed AND dirty changes; matching hashes alone do not validate the worker's claims. Preserve the selected report path, assignment, and last reviewed digest in the adviser's context or existing continuity capsule.
 
 ## Wait for one selected result
 
@@ -79,6 +114,6 @@ An active tool wait can return control to the adviser. An idle or ended adviser 
 
 ## Compatibility
 
-Version 1 reports from earlier adviser assignments remain readable with `read`, discoverable by their IDs, and watchable with `watch-result`; they lack the new source/baseline metadata. Their existing compact fields are `schemaVersion`, `workItemId`, `workerId`, `assignmentId`, `status`, UTC `updatedAt`, `workspace`, `branch`, `head`, `summary`, `changes`, `checks`, `blockers`, and `nextSuggestion`. An explicitly assigned legacy worker may keep publishing that shape with its file editor; it must sanitize and replace only its own file. The v2 `publish` command does not silently migrate v1 state.
+Version 1 reports from earlier adviser assignments remain readable with `read`, discoverable by their IDs, and watchable with `watch-result`; they lack the new source/baseline metadata. Their existing compact fields are `schemaVersion`, `workItemId`, `workerId`, `assignmentId`, `status`, UTC `updatedAt`, `workspace`, `branch`, `head`, `summary`, `changes`, `checks`, `blockers`, and `nextSuggestion`. An explicitly assigned legacy worker may keep publishing that shape with its file editor; it must sanitize and replace only its own file. `publish` and `progress` do not silently migrate v1 state. V2 reports without structured progress retain their shape and digest semantics; explicitly adding progress through `progress` or `publish` upgrades only that report to v3, which cannot be downgraded by a later publication.
 
 `status --project ... --work-item ...` still lists work-item metadata. Legacy `watch --project ... --work-item ... --after <status-digest> --timeout 60` watches any semantic metadata change, including invalid reports; use `watch-result` for completion observation. Report and exchange-directory symlinks are rejected. Reports are coordination evidence, not protection for concurrent code edits.

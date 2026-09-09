@@ -26,6 +26,8 @@ Schema validity alone is not readiness. Changed machine state, validation tied t
 
 Recovery also preserves the user's current role and authority. An adviser reading a coder's checkpoint recommends the saved next action; it does not start implementing merely because the checkpoint says to. Selected report and last-reviewed-result pointers are recovered when present, without adopting unrelated sessions.
 
+A referenced implementation checklist is reconciled too. An authorized worker can reuse or restore its matching native tasks where available, while an adviser only reads them. A saved "in progress" step describes the last report, not proof a process survived interruption. Missing native UI never requires a settings change to continue from shared files.
+
 ## Common questions
 
 **Does resume clean the tree back to the checkpoint?**

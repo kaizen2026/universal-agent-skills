@@ -70,8 +70,35 @@ function readReport(path, workItem, worker) {
   return normalizeReport(data, workItem, worker);
 }
 
+function normalizeProgress(value, reportedStatus) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Progress must be an object with steps.");
+  const ids = new Set();
+  const steps = array(value.steps, 20, step => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error("Invalid progress step.");
+    const id = identity(step.id);
+    if (ids.has(id)) throw new Error("Progress step IDs must be unique.");
+    ids.add(id);
+    if (!["pending", "in-progress", "completed", "blocked", "skipped"].includes(step.status)) throw new Error("Unknown progress step status.");
+    return { id, title: text(step.title, 200, true), status: step.status,
+      note: text(step.note ?? "", 400, ["blocked", "skipped"].includes(step.status)) };
+  });
+  if (!steps.length) throw new Error("Progress needs at least one step.");
+  if (steps.filter(step => step.status === "in-progress").length > 1) throw new Error("Only one current step per worker; group parallel subwork under one step.");
+  if (steps.some(step => step.status === "blocked") && reportedStatus !== "blocked") throw new Error("A blocked step requires a blocked report.");
+  if (["ready-for-review", "complete"].includes(reportedStatus) && steps.some(step => !["completed", "skipped"].includes(step.status))) {
+    throw new Error("A finished report cannot have unfinished progress steps.");
+  }
+  return { steps };
+}
+
+function preserveProgressSteps(current, next) {
+  if (current.progress?.steps.some(step => !next.progress?.steps.some(item => item.id === step.id))) {
+    throw new Error("Keep existing progress step IDs; explain removed scope as skipped instead of deleting history.");
+  }
+}
+
 function normalizeReport(data, workItem, worker) {
-  if (!data || ![1, 2].includes(data.schemaVersion) || data.workItemId !== workItem || data.workerId !== worker) throw new Error("Report schema or identity does not match its location.");
+  if (!data || ![1, 2, 3].includes(data.schemaVersion) || data.workItemId !== workItem || data.workerId !== worker) throw new Error("Report schema or identity does not match its location.");
   identity(data.assignmentId);
   if (!statuses.has(data.status)) throw new Error("Unknown reported status.");
   if (typeof data.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(data.updatedAt) || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error("Report needs a UTC timestamp.");
@@ -88,7 +115,7 @@ function normalizeReport(data, workItem, worker) {
     blockers: array(data.blockers, 10, value => text(value, 500, true)),
     nextSuggestion: text(data.nextSuggestion, 500),
   };
-  if (data.schemaVersion === 2) {
+  if (data.schemaVersion >= 2) {
     report.task = { title: text(data.task?.title, 300, true), source: text(data.task?.source, 500, true) };
     report.session = { harness: text(data.session?.harness, 80, true), id: text(data.session?.id, 200, true) };
     report.baseHead = text(data.baseHead, 200, true);
@@ -99,6 +126,8 @@ function normalizeReport(data, workItem, worker) {
     report.artifacts = array(data.artifacts, 10, value => text(value, 500, true));
     report.review = text(data.review, 1500);
   }
+  if (data.schemaVersion === 3) report.progress = normalizeProgress(data.progress, report.status);
+  else if (data.progress !== undefined) throw new Error("Structured progress requires report schema v3.");
   return report;
 }
 
@@ -116,7 +145,7 @@ export function status(project, workItem) {
     try {
       identity(worker);
       const report = readReport(join(root, name), workItem, worker);
-      reports.push({ workerId: worker, assignmentId: report.assignmentId, reportedStatus: report.status, updatedAt: report.updatedAt, digest: digest(semantic(report)), ...(report.schemaVersion === 2 ? { task: report.task, workspace: report.workspace, session: report.session } : {}) });
+      reports.push({ workerId: worker, assignmentId: report.assignmentId, reportedStatus: report.status, updatedAt: report.updatedAt, digest: digest(semantic(report)), ...(report.schemaVersion >= 2 ? { task: report.task, workspace: report.workspace, session: report.session } : {}) });
     } catch (error) {
       invalid.push({ file: ID.test(worker) ? name : "invalid-report-name", reason: redact(error.message) });
     }
@@ -258,14 +287,33 @@ export async function publish(project, workItem, worker, assignment, expected, w
   if (!input || Array.isArray(input) || typeof input !== "object") throw new Error("Input must be a JSON object.");
   if (!/^[a-f0-9]{64}$/.test(expected || "")) throw new Error("Publish requires the digest from start/read or the previous publish.");
   const current = read(project, workItem, worker).report;
-  if (current.schemaVersion !== 2 || current.assignmentId !== assignment) throw new Error("Publish requires the existing v2 assignment; never replace a different run.");
+  if (![2, 3].includes(current.schemaVersion) || current.assignmentId !== assignment) throw new Error("Publish requires the existing v2/v3 assignment; never replace a different run.");
   if (realpathSync(resolve(workspace)) !== realpathSync(current.workspace)) throw new Error("Publish workspace does not match this worker.");
-  const patch = normalizeReport({ ...current, ...input, schemaVersion: 2, workItemId: workItem, workerId: worker, assignmentId: assignment,
+  const patch = normalizeReport({ ...current, ...input, schemaVersion: current.schemaVersion === 3 || Object.hasOwn(input, "progress") ? 3 : 2, workItemId: workItem, workerId: worker, assignmentId: assignment,
     task: current.task, session: current.session, workspace: current.workspace, baseHead: current.baseHead, baseTreeDigest: current.baseTreeDigest,
     updatedAt: new Date().toISOString(), checkedTreeDigest: input.checkedTreeDigest || "unknown",
   }, workItem, worker);
+  preserveProgressSteps(current, patch);
   const now = snapshot(workspace);
   patch.head = now.head; patch.branch = now.branch; patch.treeDigest = now.treeDigest;
+  return writeReport(project, patch, expected);
+}
+
+// Milestone updates only: no Git subprocesses, timers, native UI control, or test claims.
+export async function updateProgress(project, workItem, worker, assignment, expected, workspace, input) {
+  identity(workItem); identity(worker); identity(assignment);
+  if (!input || Array.isArray(input) || typeof input !== "object" || !Object.hasOwn(input, "progress")) throw new Error("Progress input requires a progress object.");
+  if (Object.keys(input).some(key => !["progress", "status", "summary", "blockers", "nextSuggestion"].includes(key))) throw new Error("Progress input accepts only progress, status, summary, blockers, and nextSuggestion; publish checks separately.");
+  if (!/^[a-f0-9]{64}$/.test(expected || "")) throw new Error("Progress requires the current report digest.");
+  const current = read(project, workItem, worker).report;
+  if (![2, 3].includes(current.schemaVersion) || current.assignmentId !== assignment) throw new Error("Progress requires the existing v2/v3 assignment; never replace a different run.");
+  if (realpathSync(resolve(workspace)) !== realpathSync(current.workspace)) throw new Error("Progress workspace does not match this worker.");
+  if (!["working", "blocked"].includes(current.status) || !["working", "blocked"].includes(input.status ?? current.status)) throw new Error("Progress updates are for working/blocked reports only; use publish for an explicit result or resumed assignment.");
+  const patch = normalizeReport({ ...current, ...input, schemaVersion: 3, updatedAt: new Date().toISOString(),
+    // Old checks remain historical claims; a lightweight update is not a fresh snapshot.
+    head: "unknown", branch: "unknown", treeDigest: "unknown", checkedTreeDigest: "unknown",
+  }, workItem, worker);
+  preserveProgressSteps(current, patch);
   return writeReport(project, patch, expected);
 }
 
@@ -302,13 +350,14 @@ export async function watchResult(project, workItem, worker, assignment, after, 
 export async function main(argv) {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help") {
-    return { usage: "discover|snapshot|start|publish|status|read|watch|watch-result --project PATH [--help]", effects: "Only start/publish write reports; start also adds their Git ignore. No network, model calls, dispatch, hooks, or daemon.",
-      commands: { discover: "[--query TEXT]", snapshot: "Current Git fingerprint, not validation", start: "--task TITLE [--source REF --work-item ID --worker ID --assignment ID --shared-project PATH --harness NAME --session ID]", publish: "--work-item ID --worker ID --assignment ID --expected-digest DIGEST --workspace PATH --input FILE", read: "--work-item ID --worker ID", status: "--work-item ID", watch: "--work-item ID --after STATUS_DIGEST [--timeout 300] (legacy metadata watch)", "watch-result": "--work-item ID --worker ID --assignment ID [--after REPORT_DIGEST --timeout 300]" } };
+    return { usage: "discover|snapshot|start|progress|publish|status|read|watch|watch-result --project PATH [--help]", effects: "Only start/progress/publish write reports; start also adds their Git ignore. No network, model calls, dispatch, hooks, or daemon.",
+      commands: { discover: "[--query TEXT]", snapshot: "Current Git fingerprint, not validation", start: "--task TITLE [--source REF --work-item ID --worker ID --assignment ID --shared-project PATH --harness NAME --session ID]", progress: "--work-item ID --worker ID --assignment ID --expected-digest DIGEST --workspace PATH --input FILE (milestone only, no Git snapshot)", publish: "--work-item ID --worker ID --assignment ID --expected-digest DIGEST --workspace PATH --input FILE", read: "--work-item ID --worker ID", status: "--work-item ID", watch: "--work-item ID --after STATUS_DIGEST [--timeout 300] (legacy metadata watch)", "watch-result": "--work-item ID --worker ID --assignment ID [--after REPORT_DIGEST --timeout 300]" } };
   }
   const flags = {
     discover: ["--query"], snapshot: [],
     start: ["--task", "--source", "--work-item", "--worker", "--assignment", "--shared-project", "--harness", "--session"],
     publish: ["--work-item", "--worker", "--assignment", "--expected-digest", "--workspace", "--input"],
+    progress: ["--work-item", "--worker", "--assignment", "--expected-digest", "--workspace", "--input"],
     status: ["--work-item"], read: ["--work-item", "--worker"],
     watch: ["--work-item", "--after", "--timeout"],
     "watch-result": ["--work-item", "--worker", "--assignment", "--after", "--timeout"],
@@ -323,13 +372,13 @@ export async function main(argv) {
   if (command === "discover") return discover(args["--project"], args["--query"]);
   if (command === "snapshot") return snapshot(args["--project"]);
   if (command === "start") return start(args["--project"], args["--task"], { source: args["--source"], workItem: args["--work-item"], worker: args["--worker"], assignment: args["--assignment"], sharedProject: args["--shared-project"], harness: args["--harness"], session: args["--session"] });
-  if (command === "publish") {
-    if (!args["--workspace"] || !args["--input"]) throw new Error("Publish requires --workspace and --input.");
+  if (["publish", "progress"].includes(command)) {
+    if (!args["--workspace"] || !args["--input"]) throw new Error("Publish/progress requires --workspace and --input.");
     const info = lstatSync(args["--input"]);
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_BYTES) throw new Error("Input must be a regular file of at most 16 KiB.");
     const input = JSON.parse(readFileSync(args["--input"], "utf8"));
     if (!input || Array.isArray(input) || typeof input !== "object") throw new Error("Input must be a JSON object.");
-    return publish(args["--project"], args["--work-item"], args["--worker"], args["--assignment"], args["--expected-digest"], args["--workspace"], input);
+    return (command === "progress" ? updateProgress : publish)(args["--project"], args["--work-item"], args["--worker"], args["--assignment"], args["--expected-digest"], args["--workspace"], input);
   }
   if (command === "status") return status(args["--project"], args["--work-item"]);
   if (command === "read") return read(args["--project"], args["--work-item"], args["--worker"]);

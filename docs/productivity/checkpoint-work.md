@@ -24,6 +24,8 @@ The capsule's sharpest field is one concrete next action. Combined with exact va
 
 For adviser/worker work, those existing fields also retain the role, task source, selected report, assignment, and last reviewed result digest. The capsule points to the result instead of copying it. A recommended coder action is not permission for a resumed adviser to do the coding.
 
+When implementation has a step checklist, the capsule retains the report pointer and current stable step ID. It does not create a second editable checklist or treat a host's UI task ID as a portable session identity.
+
 Every successful semantic write advances the capsule revision and records update provenance. A stale contribution leaves the capsule unchanged and becomes a redacted, size-bounded proposal carrying its base revision and harness/session provenance. Automatic lifecycle hooks cannot infer objective, decisions, or test meaning; the phase-aware capsule remains the semantic authority.
 
 ## Concurrent updates
