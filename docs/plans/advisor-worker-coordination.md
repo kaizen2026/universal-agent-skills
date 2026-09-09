@@ -1,6 +1,6 @@
 # Adviser-worker coordination: agreed design and working notes
 
-Last updated: 2026-09-09. Status: first implementation and deterministic tests complete; feature-branch push and live test installation are the next steps. Idle-adviser wake-up and dispatch remain unimplemented.
+Last updated: 2026-09-09. Status: first implementation pushed to the feature branch and installed from GitHub into SkillCreation; deterministic and installed-helper checks passed. The user's fresh-model trial is ready, not yet run. Idle-adviser wake-up and dispatch remain unimplemented.
 
 ## Start here when resuming
 
@@ -118,6 +118,20 @@ Acceptance checks:
 
 ### Live installation and manual-model boundary
 
-Pending feature push, then install from `kaizen2026/universal-agent-skills#feat/shared-harness-advisor` into SkillCreation for Codex, selecting only the seven changed skills. Verify installed contents against the committed source, unrelated files and lock entries against the preflight snapshot, and rerun the installed watcher smoke plus existing slug tests.
+Implementation commit `8589a0af636311b2078071880a77806118562314` was pushed to `feat/shared-harness-advisor`. Remote main remained `89fe9cdc0388fd46278ae16956fe498303e7e95d`.
+
+Executed in `C:\Projects\SkillCreation`:
+
+```powershell
+npx.cmd --yes skills@latest add "kaizen2026/universal-agent-skills#feat/shared-harness-advisor" --agent codex --skill prompt-engineer implement ask-matt to-spec to-tickets checkpoint-work resume-work --yes
+```
+
+The CLI cloned the live branch and updated only those seven skills. All 21 installed files matched source (normalizing line endings), all 184 protected files/links and unrelated lock entries remained unchanged. Existing Claude junctions still point to the shared canonical skill directories; no second installation or settings change was made.
+
+Both installed helper copies passed `advisor-watch-smoke.mjs`: each emitted one `review-ready` after 5 local checks (~2 seconds), and suppressed the duplicate until deadline. The original `sandbox/slug-test/slugify.test.mjs` independently passed all 4 tests. Smoke fixtures were temporary and removed; no simulated result was left in the real test project's report directory.
+
+GitHub CI did not run: [run 34333339566](https://github.com/kaizen2026/universal-agent-skills/actions/runs/34333339566) failed before any job steps, with the annotation “The job was not started because your account is locked due to a billing issue.” Local checks passed, but this is not remote Windows/Ubuntu CI acceptance. Do not change billing/account settings or repeatedly rerun jobs without user direction.
+
+After preservation checks, added only a new trial spec (`docs/specs/advisor-trial-labels.md`) and local ticket (`.scratch/advisor-late-join/issues/01-format-label.md`) in SkillCreation. No formatter code, coordination assignment, or result report was pre-created. Existing slug files, skill settings, and prior reports were preserved.
 
 The next user trial starts Luna with an ordinary small spec and `$implement`, without IDs, adviser assignments, or reporting instructions. Only after implementation should a fresh Astra be asked in natural language to review that task and recommend what next. Deterministic tests do NOT establish that a particular model reliably chooses/follows the skill; record that behavioral result separately when the user runs it. See [behavioral scenarios](../../evals/prompt-engineer.md), especially 7–9.
